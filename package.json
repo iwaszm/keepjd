@@ -1,0 +1,20 @@
+{
+  "name": "joybuy-price-history-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Chrome extension and Cloudflare Worker MVP for Joybuy price history tracking.",
+  "scripts": {
+    "collect": "node collector/collect.js",
+    "collect:login": "node collector/login.js",
+    "test": "node --test tests/*.test.js",
+    "worker:dev": "wrangler dev worker/src/index.js --config worker/wrangler.toml",
+    "worker:deploy": "wrangler deploy worker/src/index.js --config worker/wrangler.toml",
+    "db:migrate:local": "wrangler d1 migrations apply joybuy_price_history --local --config worker/wrangler.toml",
+    "db:migrate:remote": "wrangler d1 migrations apply joybuy_price_history --remote --config worker/wrangler.toml"
+  },
+  "devDependencies": {
+    "playwright": "^1.57.0",
+    "wrangler": "^4.0.0"
+  }
+}
