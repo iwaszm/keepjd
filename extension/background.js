@@ -49,12 +49,12 @@ function extractSnapshotFromHtml(html, rawUrl) {
   return {
     joybuy_product_id: joybuyProductId,
     url: canonicalUrl(rawUrl),
-    title: extractTitle(html),
+    title: null,
     price,
     list_price: extractStructuredNumber(html, ["originPrice", "listPrice", "marketPrice", "retailPrice"]),
     promo_price: extractStructuredNumber(html, ["promotionPrice", "promoPrice", "salePrice"]),
     availability: /nicht verfügbar|ausverkauft|out of stock|currently unavailable/i.test(html) ? "out_of_stock" : "in_stock",
-    captured_at: new Date().toISOString()
+    captured_at: new Date().toISOString().slice(0, 10)
   };
 }
 

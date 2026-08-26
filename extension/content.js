@@ -64,12 +64,12 @@ function extractSnapshotFromPage() {
   return {
     joybuy_product_id: joybuyProductId,
     url: canonicalUrl(),
-    title: extractTitle(),
+    title: null,
     price,
     list_price: extractLabeledPrice(["UVP", "RRP", "WAS"]),
     promo_price: extractLabeledPrice(["Willkommensangebot", "Blitzangebot", "Promo", "Angebot"]),
     availability: extractAvailability(),
-    captured_at: new Date().toISOString()
+    captured_at: captureDate()
   };
 }
 
@@ -162,7 +162,7 @@ function updatePanelMeta(root, snapshot) {
 function maybeObserveTrackedProduct(root, snapshot) {
   if (snapshot.price !== null && TRACKED_PRODUCT_IDS.has(snapshot.joybuy_product_id) && !observedProductIds.has(snapshot.joybuy_product_id)) {
     observedProductIds.add(snapshot.joybuy_product_id);
-    postObservation({ ...snapshot, captured_at: new Date().toISOString() }).then(() => {
+    postObservation({ ...snapshot, captured_at: captureDate() }).then(() => {
       loadAndRender(root, snapshot.joybuy_product_id, state.activeRange);
     }).catch(() => {});
   }
@@ -335,7 +335,7 @@ function extractProductId(rawUrl, html) {
 
 function extractScriptPriceObservations() {
   const found = new Map();
-  const capturedAt = new Date().toISOString();
+  const capturedAt = captureDate();
   const scripts = [...document.scripts]
     .map((script) => script.textContent || "")
     .filter((text) => /self\.__next_[sf]|\/dp\/|skuId|productId|wareId|price/i.test(text));
@@ -364,7 +364,7 @@ function collectPricesFromProductUrls(text, found, capturedAt) {
     found.set(id, {
       joybuy_product_id: id,
       url: absoluteJoybuyUrl(match[1], id),
-      title: extractScriptTitle(windowText),
+      title: null,
       price,
       list_price: null,
       promo_price: null,
@@ -388,7 +388,7 @@ function collectPricesFromStructuredIds(text, found, capturedAt) {
     found.set(id, {
       joybuy_product_id: id,
       url: `https://www.joybuy.de/dp/${encodeURIComponent(id)}`,
-      title: extractScriptTitle(windowText),
+      title: null,
       price,
       list_price: null,
       promo_price: null,
@@ -537,6 +537,9 @@ function formatEuro(value) {
   return new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" }).format(Number(value));
 }
 
+function captureDate() {
+  return new Date().toISOString().slice(0, 10);
+}
 function formatDateMMDD(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";

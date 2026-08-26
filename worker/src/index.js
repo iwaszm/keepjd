@@ -41,7 +41,7 @@ export async function handleRequest(request, env) {
 
 async function getPrices(db, joybuyProductId, range) {
   const days = RANGE_DAYS[range] ?? RANGE_DAYS["30d"];
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const since = toCaptureDate(new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString());
   const product = await db
     .prepare("SELECT id, joybuy_product_id, url, title, created_at, updated_at FROM products WHERE joybuy_product_id = ?")
     .bind(joybuyProductId)
@@ -121,13 +121,13 @@ async function upsertProduct(db, snapshot) {
   await db
     .prepare(
       `INSERT INTO products (joybuy_product_id, url, title, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)
+       VALUES (?, ?, NULL, ?, ?)
        ON CONFLICT(joybuy_product_id) DO UPDATE SET
          url = excluded.url,
-         title = COALESCE(excluded.title, products.title),
+         title = NULL,
          updated_at = excluded.updated_at`
     )
-    .bind(snapshot.joybuy_product_id, snapshot.url, snapshot.title ?? null, now, now)
+    .bind(snapshot.joybuy_product_id, snapshot.url, now, now)
     .run();
 
   return db
@@ -137,57 +137,34 @@ async function upsertProduct(db, snapshot) {
 }
 
 async function maybeInsertPricePoint(db, productId, snapshot) {
-  const latest = await db
+  const captureDate = toCaptureDate(snapshot.captured_at ?? new Date().toISOString());
+  const existing = await db
     .prepare(
-      `SELECT price, list_price, promo_price, availability, captured_at
+      `SELECT id
        FROM price_points
-       WHERE product_id = ?
-       ORDER BY captured_at DESC
+       WHERE product_id = ? AND captured_at = ?
        LIMIT 1`
     )
-    .bind(productId)
+    .bind(productId, captureDate)
     .first();
 
-  if (latest && !shouldCapture(latest, snapshot)) {
-    return false;
-  }
+  if (existing) return false;
 
   await db
     .prepare(
       `INSERT INTO price_points (product_id, price, list_price, promo_price, availability, captured_at)
-       VALUES (?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, NULL, NULL, 'unknown', ?)`
     )
-    .bind(
-      productId,
-      snapshot.price,
-      snapshot.list_price ?? null,
-      snapshot.promo_price ?? null,
-      snapshot.availability ?? "unknown",
-      snapshot.captured_at ?? new Date().toISOString()
-    )
+    .bind(productId, snapshot.price, captureDate)
     .run();
   return true;
 }
 
-function shouldCapture(latest, snapshot) {
-  const latestTime = Date.parse(latest.captured_at);
-  const capturedTime = Date.parse(snapshot.captured_at ?? new Date().toISOString());
-  const ageHours = Number.isFinite(latestTime) && Number.isFinite(capturedTime)
-    ? (capturedTime - latestTime) / 36e5
-    : Infinity;
-  const latestDay = Number.isFinite(latestTime) ? new Date(latestTime).toISOString().slice(0, 10) : null;
-  const capturedDay = Number.isFinite(capturedTime) ? new Date(capturedTime).toISOString().slice(0, 10) : null;
-
-  return (
-    ageHours >= 20 ||
-    latestDay !== capturedDay ||
-    latest.price !== snapshot.price ||
-    latest.list_price !== (snapshot.list_price ?? null) ||
-    latest.promo_price !== (snapshot.promo_price ?? null) ||
-    latest.availability !== (snapshot.availability ?? "unknown")
-  );
+function toCaptureDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 10);
+  return date.toISOString().slice(0, 10);
 }
-
 function validateObservation(payload) {
   if (!payload || typeof payload !== "object") return "Body must be an object";
   if (!payload.joybuy_product_id || typeof payload.joybuy_product_id !== "string") return "joybuy_product_id is required";
