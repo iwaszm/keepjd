@@ -64,7 +64,6 @@ function extractSnapshotFromPage() {
 
   return {
     joybuy_product_id: joybuyProductId,
-    url: canonicalUrl(),
     title: null,
     price,
     list_price: extractLabeledPrice(["UVP", "RRP", "WAS"]),
@@ -396,7 +395,6 @@ function collectPricesFromProductUrls(text, found, capturedAt) {
 
     found.set(id, {
       joybuy_product_id: id,
-      url: absoluteJoybuyUrl(match[1], id),
       title: null,
       price,
       list_price: null,
@@ -420,7 +418,6 @@ function collectPricesFromStructuredIds(text, found, capturedAt) {
 
     found.set(id, {
       joybuy_product_id: id,
-      url: `https://www.joybuy.de/dp/${encodeURIComponent(id)}`,
       title: null,
       price,
       list_price: null,

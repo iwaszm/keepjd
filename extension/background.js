@@ -48,7 +48,6 @@ function extractSnapshotFromHtml(html, rawUrl) {
 
   return {
     joybuy_product_id: joybuyProductId,
-    url: canonicalUrl(rawUrl),
     title: null,
     price,
     list_price: extractStructuredNumber(html, ["originPrice", "listPrice", "marketPrice", "retailPrice"]),

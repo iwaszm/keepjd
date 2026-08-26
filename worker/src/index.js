@@ -117,7 +117,7 @@ async function loadTrackedProducts(env) {
 }
 
 async function upsertProduct(db, snapshot) {
-  const now = new Date().toISOString();
+  const now = toCaptureDate(new Date().toISOString());
   await db
     .prepare(
       `INSERT INTO products (joybuy_product_id, url, title, created_at, updated_at)
@@ -127,7 +127,7 @@ async function upsertProduct(db, snapshot) {
          title = NULL,
          updated_at = excluded.updated_at`
     )
-    .bind(snapshot.joybuy_product_id, snapshot.url, now, now)
+    .bind(snapshot.joybuy_product_id, productUrl(snapshot), now, now)
     .run();
 
   return db
@@ -160,6 +160,10 @@ async function maybeInsertPricePoint(db, productId, snapshot) {
   return true;
 }
 
+function productUrl(snapshot) {
+  if (snapshot.url && typeof snapshot.url === "string") return snapshot.url;
+  return `https://www.joybuy.de/dp/${encodeURIComponent(snapshot.joybuy_product_id)}`;
+}
 function toCaptureDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 10);
@@ -168,7 +172,6 @@ function toCaptureDate(value) {
 function validateObservation(payload) {
   if (!payload || typeof payload !== "object") return "Body must be an object";
   if (!payload.joybuy_product_id || typeof payload.joybuy_product_id !== "string") return "joybuy_product_id is required";
-  if (!payload.url || typeof payload.url !== "string") return "url is required";
   if (typeof payload.price !== "number" || !Number.isFinite(payload.price)) return "price must be a finite number";
   return null;
 }
