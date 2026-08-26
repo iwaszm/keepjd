@@ -4,6 +4,7 @@ const RANGES = ["30d", "90d"];
 const MAX_BOOT_ATTEMPTS = 20;
 const SCRIPT_CAPTURE_LIMIT = 200;
 const SCRIPT_CAPTURE_DELAY_MS = 700;
+const PASSIVE_CAPTURE_INTERVAL_MS = 5000;
 const TRACKED_PRODUCT_IDS = new Set([
   "101322517",
   "10286300",
@@ -25,16 +26,20 @@ const state = {
   lastProductId: "",
   lastPrice: null,
   syncTimer: 0,
-  scriptCaptureTimer: 0
+  scriptCaptureTimer: 0,
+  scriptCaptureInFlight: false
 };
 
 boot();
 installUrlChangeHooks();
 observePageChanges();
 window.setInterval(() => scheduleSync("interval"), 1500);
+window.setInterval(() => scheduleScriptPriceCapture(null), PASSIVE_CAPTURE_INTERVAL_MS);
+window.setTimeout(() => scheduleScriptPriceCapture(null), SCRIPT_CAPTURE_DELAY_MS);
 
 function boot(attempt = 0) {
   if (!isProductPageCandidate()) {
+    scheduleScriptPriceCapture(null);
     if (attempt < 3) window.setTimeout(() => boot(attempt + 1), 500);
     return;
   }
@@ -171,24 +176,31 @@ function scheduleScriptPriceCapture(root) {
 }
 
 async function captureScriptPriceObservations(root) {
-  const observations = extractScriptPriceObservations();
-  let shouldRefreshCurrentChart = false;
+  if (state.scriptCaptureInFlight) return;
+  state.scriptCaptureInFlight = true;
 
-  for (const observation of observations) {
-    const key = `${observation.joybuy_product_id}:${observation.price}`;
-    if (observedScriptPriceKeys.has(key)) continue;
+  try {
+    const observations = extractScriptPriceObservations();
+    let shouldRefreshCurrentChart = false;
 
-    observedScriptPriceKeys.add(key);
-    try {
-      await postObservation(observation);
-      shouldRefreshCurrentChart ||= observation.joybuy_product_id === state.lastProductId;
-    } catch {
-      observedScriptPriceKeys.delete(key);
+    for (const observation of observations) {
+      const key = `${observation.joybuy_product_id}:${observation.price}`;
+      if (observedScriptPriceKeys.has(key)) continue;
+
+      observedScriptPriceKeys.add(key);
+      try {
+        await postObservation(observation);
+        shouldRefreshCurrentChart ||= observation.joybuy_product_id === state.lastProductId;
+      } catch {
+        observedScriptPriceKeys.delete(key);
+      }
     }
-  }
 
-  if (shouldRefreshCurrentChart && state.lastProductId) {
-    loadAndRender(root, state.lastProductId, state.activeRange);
+    if (root && shouldRefreshCurrentChart && state.lastProductId) {
+      loadAndRender(root, state.lastProductId, state.activeRange);
+    }
+  } finally {
+    state.scriptCaptureInFlight = false;
   }
 }
 async function postObservation(snapshot) {
