@@ -2,11 +2,11 @@
   display: block;
   bottom: 22px;
   color: #1c1b18;
-  font-family: Georgia, "Times New Roman", serif;
-  max-width: min(420px, calc(100vw - 24px));
+  font-family: Verdana, sans-serif;
+  max-width: min(380px, calc(100vw - 24px));
   position: fixed;
   right: 22px;
-  width: 420px;
+  width: 380px;
   z-index: 2147483647;
 }
 
@@ -15,42 +15,26 @@
   border-radius: 8px;
   background: #fffdf8;
   box-shadow: 0 10px 30px rgba(34, 29, 20, 0.08);
-  padding: 14px;
+  padding: 12px;
 }
 
-#joybuy-price-history-tracker-root .jbph-header {
+#joybuy-price-history-tracker-root .jbph-top {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  border-bottom: 1px solid #ebe3d5;
-  padding-bottom: 12px;
-}
-
-#joybuy-price-history-tracker-root .jbph-kicker {
-  margin: 0 0 2px;
-  color: #746b5c;
-  font: 700 11px/1.2 Verdana, sans-serif;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-#joybuy-price-history-tracker-root h2 {
-  margin: 0;
-  font-size: 22px;
-  line-height: 1.15;
-  letter-spacing: 0;
+  gap: 10px;
+  margin-bottom: 8px;
 }
 
 #joybuy-price-history-tracker-root .jbph-now {
-  min-width: 96px;
-  text-align: right;
+  min-width: 82px;
+  text-align: left;
 }
 
 #joybuy-price-history-tracker-root .jbph-now span {
   display: block;
   color: #746b5c;
-  font: 700 11px/1.2 Verdana, sans-serif;
+  font: 700 10px/1.2 Verdana, sans-serif;
   letter-spacing: 0;
   text-transform: uppercase;
 }
@@ -59,27 +43,35 @@
   display: block;
   margin-top: 3px;
   color: #0f6b57;
-  font-size: 20px;
-  line-height: 1.2;
+  font-size: 18px;
+  line-height: 1.15;
 }
 
 #joybuy-price-history-tracker-root .jbph-toolbar {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 14px 0;
+  gap: 6px;
+  justify-content: flex-end;
+  margin: 0;
 }
 
 #joybuy-price-history-tracker-root button {
-  min-height: 34px;
+  min-width: 82px;
+  min-height: 38px;
   border: 1px solid #cfc5b3;
-  border-radius: 999px;
+  border-radius: 7px;
   background: #fff;
   color: #2b2925;
   cursor: pointer;
-  font: 700 12px/1 Verdana, sans-serif;
+  display: grid;
+  gap: 2px;
+  font: 700 12px/1.1 Verdana, sans-serif;
   letter-spacing: 0;
-  padding: 0 13px;
+  padding: 5px 8px;
+}
+
+#joybuy-price-history-tracker-root button small {
+  color: #746b5c;
+  font: 10px/1.1 Verdana, sans-serif;
 }
 
 #joybuy-price-history-tracker-root button.is-active {
@@ -88,24 +80,28 @@
   color: #fff;
 }
 
+#joybuy-price-history-tracker-root button.is-active small {
+  color: rgba(255, 255, 255, 0.82);
+}
+
 #joybuy-price-history-tracker-root .jbph-status {
-  margin: 8px 0;
+  margin: 4px 0 6px;
   color: #746b5c;
-  font: 13px/1.45 Verdana, sans-serif;
+  font: 12px/1.35 Verdana, sans-serif;
 }
 
 #joybuy-price-history-tracker-root .jbph-chart {
-  min-height: 220px;
+  min-height: 196px;
 }
 
 #joybuy-price-history-tracker-root .jbph-empty {
   display: grid;
-  min-height: 210px;
+  min-height: 190px;
   place-items: center;
   border: 1px dashed #d8d0c1;
   border-radius: 8px;
   color: #746b5c;
-  font: 13px/1.4 Verdana, sans-serif;
+  font: 12px/1.4 Verdana, sans-serif;
 }
 
 #joybuy-price-history-tracker-root .jbph-svg {
@@ -153,12 +149,16 @@
     width: auto;
   }
 
-  #joybuy-price-history-tracker-root .jbph-header {
+  #joybuy-price-history-tracker-root .jbph-top {
     align-items: stretch;
     flex-direction: column;
   }
 
-  #joybuy-price-history-tracker-root .jbph-now {
-    text-align: left;
+  #joybuy-price-history-tracker-root .jbph-toolbar {
+    justify-content: stretch;
+  }
+
+  #joybuy-price-history-tracker-root button {
+    flex: 1;
   }
 }

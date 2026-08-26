@@ -27,7 +27,8 @@ const state = {
   lastPrice: null,
   syncTimer: 0,
   scriptCaptureTimer: 0,
-  scriptCaptureInFlight: false
+  scriptCaptureInFlight: false,
+  rangeMins: Object.fromEntries(RANGES.map((range) => [range, null]))
 };
 
 boot();
@@ -85,20 +86,16 @@ function injectPanel(snapshot) {
   root.addEventListener("touchstart", stopPageEvent);
   root.innerHTML = `
     <div class="jbph-shell">
-      <div class="jbph-header">
-        <div>
-          <p class="jbph-kicker">Price history</p>
-          <h2>Joybuy trend</h2>
-        </div>
+      <div class="jbph-top">
         <div class="jbph-now">
-          <span>Current</span>
-          <strong data-current-price>${snapshot.price === null ? "Checking..." : formatEuro(snapshot.price)}</strong>
+          <span>Now</span>
+          <strong data-current-price>${snapshot.price === null ? "--" : formatEuro(snapshot.price)}</strong>
+        </div>
+        <div class="jbph-toolbar" role="tablist" aria-label="Price history range">
+          ${RANGES.map((range) => renderRangeButton(range)).join("")}
         </div>
       </div>
-      <div class="jbph-toolbar" role="tablist" aria-label="Price history range">
-        ${RANGES.map((range) => `<button type="button" data-range="${range}" class="${range === state.activeRange ? "is-active" : ""}">${range.replace("d", " days")}</button>`).join("")}
-      </div>
-      <div class="jbph-status" data-status>Loading price history...</div>
+      <div class="jbph-status" data-status>Loading...</div>
       <div class="jbph-chart" data-chart aria-label="Joybuy price history chart"></div>
     </div>
   `;
@@ -135,8 +132,11 @@ function syncPanel() {
   updatePanelMeta(root, snapshot);
 
   if (productChanged || hrefChanged) {
+    state.rangeMins = Object.fromEntries(RANGES.map((range) => [range, null]));
+    updateRangeButtons(root);
     renderChart(root.querySelector("[data-chart]"), []);
     loadAndRender(root, snapshot.joybuy_product_id, state.activeRange);
+    loadRangeMinimums(root, snapshot.joybuy_product_id);
   }
 
   if (priceChanged || productChanged) {
@@ -150,13 +150,43 @@ function syncPanel() {
   return true;
 }
 
+function renderRangeButton(range) {
+  const days = range.replace("d", "");
+  const min = state.rangeMins[range];
+  return `<button type="button" data-range="${range}" class="${range === state.activeRange ? "is-active" : ""}"><span>${days}</span><small data-range-min="${range}">${min === null ? "Low --" : `Low ${formatEuro(min)}`}</small></button>`;
+}
+
+function updateRangeButtons(root) {
+  root.querySelectorAll("[data-range]").forEach((button) => {
+    const range = button.dataset.range;
+    const min = state.rangeMins[range];
+    button.classList.toggle("is-active", range === state.activeRange);
+    const minNode = button.querySelector("[data-range-min]");
+    if (minNode) minNode.textContent = min === null ? "Low --" : `Low ${formatEuro(min)}`;
+  });
+}
+
+async function loadRangeMinimums(root, joybuyProductId) {
+  await Promise.all(RANGES.map(async (range) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/products/${encodeURIComponent(joybuyProductId)}/prices?range=${range}`);
+      if (!response.ok) return;
+      const data = await response.json();
+      state.rangeMins[range] = minimumPrice(data.prices || []);
+      updateRangeButtons(root);
+    } catch {}
+  }));
+}
+
+function minimumPrice(points) {
+  const prices = points.map((point) => Number(point.price)).filter(Number.isFinite);
+  return prices.length ? Math.min(...prices) : null;
+}
 function updatePanelMeta(root, snapshot) {
   const priceNode = root.querySelector("[data-current-price]");
-  if (priceNode) priceNode.textContent = snapshot.price === null ? "Checking..." : formatEuro(snapshot.price);
+  if (priceNode) priceNode.textContent = snapshot.price === null ? "--" : formatEuro(snapshot.price);
 
-  root.querySelectorAll("[data-range]").forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.range === state.activeRange);
-  });
+  updateRangeButtons(root);
 }
 
 function maybeObserveTrackedProduct(root, snapshot) {
@@ -243,16 +273,19 @@ function stopPageEvent(event) {
 }
 
 async function loadAndRender(root, joybuyProductId, range) {
-  setStatus(root, "Loading price history...");
+  setStatus(root, "Loading...");
   try {
     const response = await fetch(`${API_BASE_URL}/products/${encodeURIComponent(joybuyProductId)}/prices?range=${range}`);
     if (!response.ok) throw new Error(`API returned ${response.status}`);
     const data = await response.json();
-    renderChart(root.querySelector("[data-chart]"), data.prices || []);
-    setStatus(root, data.prices?.length ? "" : "No tracked history yet.");
+    const prices = data.prices || [];
+    state.rangeMins[range] = minimumPrice(prices);
+    updateRangeButtons(root);
+    renderChart(root.querySelector("[data-chart]"), prices);
+    setStatus(root, prices.length ? "" : "No data");
   } catch {
     renderChart(root.querySelector("[data-chart]"), []);
-    setStatus(root, "Price history is unavailable right now.");
+    setStatus(root, "Unavailable");
   }
 }
 
