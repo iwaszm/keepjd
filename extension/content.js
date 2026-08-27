@@ -14,9 +14,11 @@ const SCRIPT_PRICE_KEYS = [
   "realPrice",
   "currentPrice",
   "displayPrice",
-  "jdPrice"
+  "jdPrice",
+  "price"
 ];
 const SCRIPT_PRICE_CONTEXT_BLOCKLIST = /(?:unit|unitPrice|unit_price|basePrice|base_price|referencePrice|reference_price|pricePer|price_per|perPrice|per_price|grundpreis|basispreis|stückpreis|shipping|delivery|freight|tax|vat|discount|coupon|voucher|saving|save|points|installment|threshold)/i;
+const GENERIC_PRICE_CONTEXT_ALLOWLIST = /(?:priceCurrency|offers|itemCommonView|skuId|skuUuid|productId|wareId|Product|ListItem)/i;
 const observedCurrentPriceKeys = new Set();
 const observedScriptPriceKeys = new Set();
 const state = {
@@ -440,6 +442,7 @@ function extractPriceFromScriptWindow(text) {
     while ((match = pattern.exec(text))) {
       const context = surroundingText(text, match.index, 90, 90);
       if (SCRIPT_PRICE_CONTEXT_BLOCKLIST.test(context)) continue;
+      if (key === "price" && !GENERIC_PRICE_CONTEXT_ALLOWLIST.test(context)) continue;
 
       const price = Number(match[1].replace(",", "."));
       if (isPlausibleProductPrice(price)) {

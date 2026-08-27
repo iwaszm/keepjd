@@ -1,0 +1,47 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  buildPageUrl,
+  extractSearchPageObservations,
+  pageNumberFromSeed
+} from "../background-extension/parser.js";
+
+test("buildPageUrl replaces existing page parameter", () => {
+  assert.equal(
+    buildPageUrl("https://www.joybuy.de/s?k=x&l1=2411&page=1", 12),
+    "https://www.joybuy.de/s?k=x&l1=2411&page=12"
+  );
+});
+
+test("pageNumberFromSeed defaults to page one", () => {
+  assert.equal(pageNumberFromSeed("https://www.joybuy.de/s?k=x"), 1);
+  assert.equal(pageNumberFromSeed("https://www.joybuy.de/s?k=x&page=3"), 3);
+});
+
+test("extractSearchPageObservations reads JSON-LD offer prices from Next scripts", () => {
+  const html = `
+    <script>(self.__next_s=self.__next_s||[]).push([0,{
+      "children":"{\\"@type\\":\\"ListItem\\",\\"item\\":{\\"@type\\":\\"Product\\",\\"url\\":\\"https://www.joybuy.de/dp/example-product/10286300\\",\\"offers\\":{\\"@type\\":\\"Offer\\",\\"price\\":\\"3.98\\",\\"priceCurrency\\":\\"EUR\\"}}}"
+    }])</script>
+  `;
+
+  assert.deepEqual(extractSearchPageObservations(html, "2026-08-27"), [{
+    joybuy_product_id: "10286300",
+    title: null,
+    price: 3.98,
+    list_price: null,
+    promo_price: null,
+    availability: "unknown",
+    captured_at: "2026-08-27"
+  }]);
+});
+
+test("extractSearchPageObservations ignores shipping price near generic price key", () => {
+  const html = `
+    <script>self.__next_f.push([1,"
+      {\\"skuId\\":\\"10286300\\",\\"delivery\\":{\\"price\\":\\"3.99\\",\\"priceCurrency\\":\\"EUR\\"}}
+    "])</script>
+  `;
+
+  assert.deepEqual(extractSearchPageObservations(html, "2026-08-27"), []);
+});

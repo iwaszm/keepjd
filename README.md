@@ -19,6 +19,10 @@ This project is currently optimized for low-cost validation, not full-site autom
   - `styles.css` styles the compact floating chart panel.
   - `background.js` contains a best-effort alarm collector for configured tracked products.
   - `tracked-products.js` is a small legacy seed list for the background collector.
+- `background-extension/` - Separate Ubuntu-oriented Chrome extension for background listing-page collection.
+  - Fetches configured search/listing URLs page by page without opening tabs.
+  - Parses `self.__next_s` and `self.__next_f` script payloads for product IDs and prices.
+  - Posts observations to the same Worker API.
 - `worker/` - Cloudflare Worker API, D1 config, migrations, and cron configuration.
   - `src/index.js` implements the API and persistence rules.
   - `wrangler.toml` contains Worker name, D1 binding, cron trigger, and `TRACKED_PRODUCTS_JSON`.
