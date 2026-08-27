@@ -18,6 +18,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Start Joybuy background collection"
+    "default_title": "Joybuy background collection",
+    "default_popup": "popup.html"
   }
 }

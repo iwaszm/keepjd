@@ -20,9 +20,10 @@ Each seed is treated as a paginated listing URL. The collector replaces the `pag
 2. Enable Developer Mode.
 3. Click `Load unpacked`.
 4. Select this `background-extension/` folder.
-5. Click the extension icon to start a collection run.
+5. Click the extension icon.
+6. Click `Start collection`.
 
-Progress is stored in Chrome extension local storage under `joybuyBackgroundCollectorState` and logged to the extension service worker console.
+Progress is shown in the popup, stored in Chrome extension local storage under `joybuyBackgroundCollectorState`, and logged to the extension service worker console.
 
 ## Behavior
 

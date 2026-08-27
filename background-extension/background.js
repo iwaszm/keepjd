@@ -13,7 +13,10 @@ const ALARM_NAME = "joybuy-background-page-collector";
 const STORAGE_KEY = "joybuyBackgroundCollectorState";
 const OBSERVE_URL = `${API_BASE_URL}/products/observe`;
 
+console.info("Joybuy background collector service worker loaded");
+
 chrome.runtime.onInstalled.addListener(() => {
+  console.info("Joybuy background collector installed");
   setIdleStatus("installed");
 });
 
@@ -21,6 +24,25 @@ chrome.action.onClicked.addListener(() => {
   startCollection("manual_click").catch((error) => {
     console.error("Joybuy background collection failed to start", error);
   });
+});
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "START_COLLECTION") {
+    startCollection("popup").then(() => sendResponse({ ok: true })).catch((error) => {
+      console.error("Joybuy background collection failed to start", error);
+      sendResponse({ ok: false, error: error.message });
+    });
+    return true;
+  }
+
+  if (message?.type === "GET_STATE") {
+    loadState().then((state) => sendResponse({ ok: true, state })).catch((error) => {
+      sendResponse({ ok: false, error: error.message });
+    });
+    return true;
+  }
+
+  return false;
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -31,6 +53,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 async function startCollection(reason) {
+  console.info("Joybuy background collection starting", { reason, seeds: SEED_PAGES.length });
+  await setBadge("RUN", "#2563eb");
   const startedAt = new Date().toISOString();
   const queue = SEED_PAGES.map((seedUrl) => ({
     seedUrl,
@@ -63,6 +87,7 @@ async function startCollection(reason) {
 async function processQueue() {
   const state = await loadState();
   if (!state.running) return;
+  await setBadge("RUN", "#2563eb");
 
   let pagesLeft = PAGES_PER_ALARM_TICK;
   while (pagesLeft > 0) {
@@ -73,6 +98,7 @@ async function processQueue() {
       state.updatedAt = state.finishedAt;
       await saveState(state);
       chrome.alarms.clear(ALARM_NAME);
+      await setBadge("OK", "#15803d");
       console.info("Joybuy background collection finished", state.totals);
       return;
     }
@@ -94,7 +120,7 @@ async function collectPage(state, item) {
   }
 
   const pageUrl = buildPageUrl(item.seedUrl, item.nextPage);
-  console.info("Fetching Joybuy page", pageUrl);
+  console.info("Joybuy collector fetching page", pageUrl);
 
   try {
     const response = await fetch(pageUrl, {
@@ -125,6 +151,13 @@ async function collectPage(state, item) {
     state.totals.observationsFound += observations.length;
     state.totals.observationsPosted += freshObservations.length;
 
+    console.info("Joybuy collector page result", {
+      pageUrl,
+      observations: observations.length,
+      freshObservations: freshObservations.length,
+      totals: state.totals
+    });
+
     if (item.emptyOrDuplicatePages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
       markSeedDone(state, item);
     }
@@ -133,6 +166,8 @@ async function collectPage(state, item) {
     state.lastError = item.lastError;
     state.totals.observationsFailed += 1;
     item.nextPage += 1;
+    await setBadge("ERR", "#b91c1c");
+    console.error("Joybuy collector page failed", item.lastError);
   }
 }
 
@@ -154,6 +189,7 @@ function markSeedDone(state, item) {
 
 async function setIdleStatus(reason) {
   const now = new Date().toISOString();
+  await setBadge("", "#6b7280");
   await saveState({
     running: false,
     reason,
@@ -181,4 +217,9 @@ async function saveState(state) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function setBadge(text, color) {
+  await chrome.action.setBadgeText({ text });
+  await chrome.action.setBadgeBackgroundColor({ color });
 }
