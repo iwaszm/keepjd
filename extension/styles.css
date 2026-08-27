@@ -91,12 +91,12 @@
 }
 
 #joybuy-price-history-tracker-root .jbph-chart {
-  min-height: 196px;
+  min-height: 96px;
 }
 
 #joybuy-price-history-tracker-root .jbph-empty {
   display: grid;
-  min-height: 190px;
+  min-height: 96px;
   place-items: center;
   border: 1px dashed #d8d0c1;
   border-radius: 8px;

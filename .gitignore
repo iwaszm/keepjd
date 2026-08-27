@@ -4,6 +4,7 @@ node_modules/
 dist/
 coverage/
 *.log
+docs/context.md
 collector/.browser-profile/
 collector/logs/*
 !collector/logs/.gitkeep

@@ -16,3 +16,157 @@ test("OPTIONS returns CORS preflight response", async () => {
   assert.equal(response.status, 204);
   assert.equal(response.headers.get("access-control-allow-methods"), "GET,POST,OPTIONS");
 });
+
+test("POST /products/observe overwrites same-day price with the latest observation", async () => {
+  const db = new FakeD1();
+
+  const first = await handleRequest(new Request("https://api.example.test/products/observe", {
+    method: "POST",
+    body: JSON.stringify({
+      joybuy_product_id: "10387040",
+      price: 3.99,
+      captured_at: "2026-08-27"
+    })
+  }), { DB: db });
+  assert.equal(first.status, 200);
+  assert.equal((await first.json()).inserted, true);
+
+  const lower = await handleRequest(new Request("https://api.example.test/products/observe", {
+    method: "POST",
+    body: JSON.stringify({
+      joybuy_product_id: "10387040",
+      price: 2.89,
+      captured_at: "2026-08-27"
+    })
+  }), { DB: db });
+  assert.equal(lower.status, 200);
+  assert.equal((await lower.json()).inserted, true);
+
+  const higher = await handleRequest(new Request("https://api.example.test/products/observe", {
+    method: "POST",
+    body: JSON.stringify({
+      joybuy_product_id: "10387040",
+      price: 3.49,
+      captured_at: "2026-08-27"
+    })
+  }), { DB: db });
+  assert.equal(higher.status, 200);
+  assert.equal((await higher.json()).inserted, true);
+
+  const history = await handleRequest(new Request("https://api.example.test/products/10387040/prices?range=30d"), { DB: db });
+  const body = await history.json();
+  assert.deepEqual(body.prices, [{
+    price: 3.49,
+    list_price: null,
+    promo_price: null,
+    availability: "unknown",
+    captured_at: "2026-08-27"
+  }]);
+});
+
+class FakeD1 {
+  constructor() {
+    this.products = [];
+    this.pricePoints = [];
+    this.nextProductId = 1;
+    this.nextPricePointId = 1;
+  }
+
+  prepare(sql) {
+    return new FakeStatement(this, sql);
+  }
+}
+
+class FakeStatement {
+  constructor(db, sql) {
+    this.db = db;
+    this.sql = sql;
+    this.values = [];
+  }
+
+  bind(...values) {
+    this.values = values;
+    return this;
+  }
+
+  async first() {
+    if (/FROM products WHERE joybuy_product_id = \?/i.test(this.sql)) {
+      return this.db.products.find((product) => product.joybuy_product_id === this.values[0]) || null;
+    }
+
+    if (/FROM price_points\s+WHERE product_id = \? AND captured_at = \?/i.test(this.sql)) {
+      const [productId, capturedAt] = this.values;
+      return this.db.pricePoints.find((point) => point.product_id === productId && point.captured_at === capturedAt) || null;
+    }
+
+    throw new Error(`Unhandled first query: ${this.sql}`);
+  }
+
+  async all() {
+    if (/FROM price_points\s+WHERE product_id = \? AND captured_at >= \?/i.test(this.sql)) {
+      const [productId, since] = this.values;
+      const results = this.db.pricePoints
+        .filter((point) => point.product_id === productId && point.captured_at >= since)
+        .sort((a, b) => a.captured_at.localeCompare(b.captured_at))
+        .map(({ price, list_price, promo_price, availability, captured_at }) => ({
+          price,
+          list_price,
+          promo_price,
+          availability,
+          captured_at
+        }));
+      return { results };
+    }
+
+    throw new Error(`Unhandled all query: ${this.sql}`);
+  }
+
+  async run() {
+    if (/INSERT INTO products/i.test(this.sql)) {
+      const [joybuyProductId, url, createdAt, updatedAt] = this.values;
+      const existing = this.db.products.find((product) => product.joybuy_product_id === joybuyProductId);
+      if (existing) {
+        existing.url = url;
+        existing.title = null;
+        existing.updated_at = updatedAt;
+        return {};
+      }
+
+      this.db.products.push({
+        id: this.db.nextProductId++,
+        joybuy_product_id: joybuyProductId,
+        url,
+        title: null,
+        created_at: createdAt,
+        updated_at: updatedAt
+      });
+      return {};
+    }
+
+    if (/INSERT INTO price_points/i.test(this.sql)) {
+      const [productId, price, capturedAt] = this.values;
+      this.db.pricePoints.push({
+        id: this.db.nextPricePointId++,
+        product_id: productId,
+        price,
+        list_price: null,
+        promo_price: null,
+        availability: "unknown",
+        captured_at: capturedAt
+      });
+      return {};
+    }
+
+    if (/UPDATE price_points/i.test(this.sql)) {
+      const [price, id] = this.values;
+      const point = this.db.pricePoints.find((item) => item.id === id);
+      point.price = price;
+      point.list_price = null;
+      point.promo_price = null;
+      point.availability = "unknown";
+      return {};
+    }
+
+    throw new Error(`Unhandled run query: ${this.sql}`);
+  }
+}

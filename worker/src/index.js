@@ -140,7 +140,7 @@ async function maybeInsertPricePoint(db, productId, snapshot) {
   const captureDate = toCaptureDate(snapshot.captured_at ?? new Date().toISOString());
   const existing = await db
     .prepare(
-      `SELECT id
+      `SELECT id, price
        FROM price_points
        WHERE product_id = ? AND captured_at = ?
        LIMIT 1`
@@ -148,7 +148,17 @@ async function maybeInsertPricePoint(db, productId, snapshot) {
     .bind(productId, captureDate)
     .first();
 
-  if (existing) return false;
+  if (existing) {
+    await db
+      .prepare(
+        `UPDATE price_points
+         SET price = ?, list_price = NULL, promo_price = NULL, availability = 'unknown'
+         WHERE id = ?`
+      )
+      .bind(snapshot.price, existing.id)
+      .run();
+    return true;
+  }
 
   await db
     .prepare(

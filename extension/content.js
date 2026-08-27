@@ -5,20 +5,19 @@ const MAX_BOOT_ATTEMPTS = 20;
 const SCRIPT_CAPTURE_LIMIT = 200;
 const SCRIPT_CAPTURE_DELAY_MS = 700;
 const PASSIVE_CAPTURE_INTERVAL_MS = 5000;
-const TRACKED_PRODUCT_IDS = new Set([
-  "101322517",
-  "10286300",
-  "100946343",
-  "10372137",
-  "100736603",
-  "102744800",
-  "102744790",
-  "10328909",
-  "10382745",
-  "10468517",
-  "102395532"
-]);
-const observedProductIds = new Set();
+const SCRIPT_PRICE_KEYS = [
+  "promotionPrice",
+  "promoPrice",
+  "salePrice",
+  "sellingPrice",
+  "skuPrice",
+  "realPrice",
+  "currentPrice",
+  "displayPrice",
+  "jdPrice"
+];
+const SCRIPT_PRICE_CONTEXT_BLOCKLIST = /(?:unit|unitPrice|unit_price|basePrice|base_price|referencePrice|reference_price|pricePer|price_per|perPrice|per_price|grundpreis|basispreis|stückpreis|shipping|delivery|freight|tax|vat|discount|coupon|voucher|saving|save|points|installment|threshold)/i;
+const observedCurrentPriceKeys = new Set();
 const observedScriptPriceKeys = new Set();
 const state = {
   activeRange: "30d",
@@ -139,7 +138,7 @@ function syncPanel() {
   }
 
   if (priceChanged || productChanged) {
-    maybeObserveTrackedProduct(root, snapshot);
+    maybeObserveCurrentProduct(root, snapshot);
   }
 
   if (priceChanged || productChanged || hrefChanged) {
@@ -188,13 +187,21 @@ function updatePanelMeta(root, snapshot) {
   updateRangeButtons(root);
 }
 
-function maybeObserveTrackedProduct(root, snapshot) {
-  if (snapshot.price !== null && TRACKED_PRODUCT_IDS.has(snapshot.joybuy_product_id) && !observedProductIds.has(snapshot.joybuy_product_id)) {
-    observedProductIds.add(snapshot.joybuy_product_id);
-    postObservation({ ...snapshot, captured_at: captureDate() }).then(() => {
-      loadAndRender(root, snapshot.joybuy_product_id, state.activeRange);
-    }).catch(() => {});
-  }
+function maybeObserveCurrentProduct(root, snapshot) {
+  if (snapshot.price === null) return;
+
+  const capturedAt = captureDate();
+  const observation = { ...snapshot, captured_at: capturedAt };
+  const key = `${observation.joybuy_product_id}:${capturedAt}:${observation.price}`;
+  if (observedCurrentPriceKeys.has(key)) return;
+
+  observedCurrentPriceKeys.add(key);
+  postObservation(observation).then(() => {
+    loadAndRender(root, observation.joybuy_product_id, state.activeRange);
+    loadRangeMinimums(root, observation.joybuy_product_id);
+  }).catch(() => {
+    observedCurrentPriceKeys.delete(key);
+  });
 }
 
 function scheduleScriptPriceCapture(root) {
@@ -295,8 +302,8 @@ function renderChart(container, points) {
   }
 
   const width = 640;
-  const height = 220;
-  const pad = { top: 18, right: 18, bottom: 42, left: 48 };
+  const height = 170;
+  const pad = { top: 16, right: 18, bottom: 34, left: 36 };
   const prices = points.map((point) => Number(point.price)).filter(Number.isFinite);
   const min = Math.min(...prices);
   const max = Math.max(...prices);
@@ -307,20 +314,15 @@ function renderChart(container, points) {
     return { x, y, point };
   });
   const line = coords.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
-  const last = coords.at(-1);
   const xLabels = getXAxisLabels(coords);
-  const axisY = height - pad.bottom;
 
   container.innerHTML = `
     <svg class="jbph-svg" viewBox="0 0 ${width} ${height}" role="img">
       <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}" />
       <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" />
-      <text x="${pad.left}" y="14">${formatEuro(max)}</text>
-      <text x="${pad.left}" y="${axisY - 4}">${formatEuro(min)}</text>
       <polyline points="${line}" />
       ${coords.map(({ x, y, point }) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3"><title>${new Date(point.captured_at).toLocaleDateString()} - ${formatEuro(point.price)}</title></circle>`).join("")}
       ${xLabels.map(({ x, label }) => `<text class="jbph-x-label" x="${x.toFixed(1)}" y="${height - 12}" text-anchor="middle">${label}</text>`).join("")}
-      <text class="jbph-last" x="${Math.min(last.x + 8, width - 110)}" y="${Math.max(last.y - 8, 18)}">${formatEuro(last.point.price)}</text>
     </svg>
   `;
 }
@@ -429,27 +431,25 @@ function collectPricesFromStructuredIds(text, found, capturedAt) {
 }
 
 function extractPriceFromScriptWindow(text) {
-  const preferredKeys = [
-    "promotionPrice",
-    "promoPrice",
-    "salePrice",
-    "skuPrice",
-    "realPrice",
-    "currentPrice",
-    "displayPrice",
-    "jdPrice",
-    "price"
-  ];
+  const candidates = [];
 
-  for (const key of preferredKeys) {
-    const pattern = new RegExp(`["']?${key}["']?\\s*[:=]\\s*["']?(?:€\\s*)?([0-9]{1,5}(?:[.,][0-9]{1,2})?)`, "i");
-    const match = text.match(pattern);
-    if (!match?.[1]) continue;
-    const price = Number(match[1].replace(",", "."));
-    if (isPlausibleProductPrice(price)) return price;
+  for (let rank = 0; rank < SCRIPT_PRICE_KEYS.length; rank += 1) {
+    const key = SCRIPT_PRICE_KEYS[rank];
+    const pattern = new RegExp(`["']?${key}["']?\\s*[:=]\\s*["']?(?:€\\s*)?([0-9]{1,5}(?:[.,][0-9]{1,2})?)`, "gi");
+    let match;
+    while ((match = pattern.exec(text))) {
+      const context = surroundingText(text, match.index, 90, 90);
+      if (SCRIPT_PRICE_CONTEXT_BLOCKLIST.test(context)) continue;
+
+      const price = Number(match[1].replace(",", "."));
+      if (isPlausibleProductPrice(price)) {
+        candidates.push({ rank, index: match.index, price });
+      }
+    }
   }
 
-  return extractFirstEuroPrice(text);
+  candidates.sort((a, b) => a.rank - b.rank || a.index - b.index);
+  return candidates[0]?.price ?? null;
 }
 
 function extractScriptTitle(text) {
