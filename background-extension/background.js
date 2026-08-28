@@ -88,6 +88,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 async function startCollection(reason) {
   console.info("Joybuy background collection starting", { reason, targets: TARGET_PAGES.length });
+  await chrome.alarms.clear(ALARM_NAME);
   await setBadge("RUN", "#2563eb");
   const startedAt = new Date().toISOString();
   const queue = TARGET_PAGES.map((target, index) => {

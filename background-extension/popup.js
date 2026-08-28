@@ -15,7 +15,8 @@ const errorNode = document.getElementById("error");
 
 startButton.addEventListener("click", async () => {
   startButton.disabled = true;
-  statusNode.textContent = "Starting";
+  const state = await readState();
+  statusNode.textContent = state.running || state.paused || state.finishedAt ? "Restarting" : "Starting";
   const response = await chrome.runtime.sendMessage({ type: "START_COLLECTION" });
   if (!response?.ok) showError(response?.error || "Failed to start");
   await refreshState();
@@ -49,7 +50,8 @@ async function refreshState() {
   const lastDoneTarget = [...queue].reverse().find((entry) => entry.done);
   lastTargetPagesNode.textContent = lastDoneTarget ? `${lastDoneTarget.pagesFetched || 0}` : "-";
   lastReasonNode.textContent = lastDoneTarget?.doneReason || "-";
-  startButton.disabled = Boolean(state.running || state.paused);
+  startButton.disabled = false;
+  startButton.textContent = state.running || state.paused || state.finishedAt ? "Restart" : "Start";
   pauseButton.disabled = !state.running && !state.paused;
   pauseButton.textContent = state.paused ? "Resume" : "Pause";
 
