@@ -110,6 +110,66 @@ test("GET /products/:id/prices includes the latest point before the requested ra
   }]);
 });
 
+test("POST /products/observe-batch records multiple observations", async () => {
+  const db = new FakeD1();
+
+  const response = await handleRequest(new Request("https://api.example.test/products/observe-batch", {
+    method: "POST",
+    body: JSON.stringify({
+      observations: [
+        {
+          joybuy_product_id: "10100568",
+          price: 4.18,
+          availability: "in_stock",
+          captured_at: "2026-08-28"
+        },
+        {
+          joybuy_product_id: "10145624",
+          price: 3.47,
+          availability: "out_of_stock",
+          captured_at: "2026-08-28"
+        }
+      ]
+    })
+  }), { DB: db });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    inserted: 2,
+    failed: 0,
+    results: [
+      { ok: true, joybuy_product_id: "10100568", inserted: true },
+      { ok: true, joybuy_product_id: "10145624", inserted: true }
+    ]
+  });
+  assert.equal(db.products.length, 2);
+  assert.equal(db.pricePoints.length, 2);
+});
+
+test("POST /products/observe-batch reports invalid observations", async () => {
+  const response = await handleRequest(new Request("https://api.example.test/products/observe-batch", {
+    method: "POST",
+    body: JSON.stringify({
+      observations: [
+        { joybuy_product_id: "10100568", price: 4.18 },
+        { joybuy_product_id: "10145624", price: "3.47" }
+      ]
+    })
+  }), { DB: new FakeD1() });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    inserted: 1,
+    failed: 1,
+    results: [
+      { ok: true, joybuy_product_id: "10100568", inserted: true },
+      { ok: false, error: "price must be a finite number", joybuy_product_id: "10145624" }
+    ]
+  });
+});
+
 class FakeD1 {
   constructor() {
     this.products = [];

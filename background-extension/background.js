@@ -21,6 +21,7 @@ const ALARM_NAME = "joybuy-background-page-collector";
 const STORAGE_KEY = "joybuyBackgroundCollectorState";
 const SNAPSHOT_CACHE_KEY = "joybuyBackgroundCollectorSnapshots";
 const OBSERVE_URL = `${API_BASE_URL}/products/observe`;
+const OBSERVE_BATCH_URL = `${API_BASE_URL}/products/observe-batch`;
 
 console.info("Joybuy background collector service worker loaded");
 
@@ -234,14 +235,13 @@ async function collectPage(state, item) {
     const seen = new Set(item.seenProductIds);
     const snapshotCache = await loadSnapshotCache();
     const freshObservations = observations.filter((observation) => !seen.has(observation.joybuy_product_id));
+    const observationsToPost = [];
     let postedCount = 0;
     let skippedCount = 0;
 
     for (const observation of freshObservations) {
       if (shouldPostObservation(observation, snapshotCache)) {
-        await postObservation(observation);
-        postedCount += 1;
-        await sleep(OBSERVATION_DELAY_MS);
+        observationsToPost.push(observation);
       } else {
         skippedCount += 1;
       }
@@ -249,6 +249,12 @@ async function collectPage(state, item) {
       updateSnapshotCache(snapshotCache, observation);
       seen.add(observation.joybuy_product_id);
     }
+
+    if (observationsToPost.length) {
+      postedCount = await postObservations(observationsToPost);
+      if (OBSERVATION_DELAY_MS > 0) await sleep(OBSERVATION_DELAY_MS);
+    }
+
     await saveSnapshotCache(snapshotCache);
 
     item.seenProductIds = [...seen];
@@ -311,14 +317,33 @@ async function collectPage(state, item) {
   return true;
 }
 
-async function postObservation(observation) {
-  const response = await fetch(OBSERVE_URL, {
+async function postObservations(observations) {
+  const response = await fetch(OBSERVE_BATCH_URL, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(observation)
+    body: JSON.stringify({ observations })
   });
 
-  if (!response.ok) throw new Error(`observe failed: ${response.status}`);
+  if (!response.ok) {
+    await postObservationsIndividually(observations);
+    return observations.length;
+  }
+
+  const body = await response.json().catch(() => null);
+  if (!body?.ok) throw new Error(`observe batch failed: ${body?.failed ?? "unknown"}`);
+  return body.inserted ?? observations.length;
+}
+
+async function postObservationsIndividually(observations) {
+  for (const observation of observations) {
+    const response = await fetch(OBSERVE_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(observation)
+    });
+
+    if (!response.ok) throw new Error(`observe failed: ${response.status}`);
+  }
 }
 
 function markTargetDone(state, item, reason) {

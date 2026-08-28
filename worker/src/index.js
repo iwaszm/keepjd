@@ -36,6 +36,10 @@ export async function handleRequest(request, env) {
     return observeProduct(request, env.DB);
   }
 
+  if (request.method === "POST" && url.pathname === "/products/observe-batch") {
+    return observeProductsBatch(request, env.DB);
+  }
+
   return json({ error: "Not found" }, 404);
 }
 
@@ -87,6 +91,40 @@ async function observeProduct(request, db) {
   const inserted = await maybeInsertPricePoint(db, product.id, payload);
 
   return json({ product, inserted });
+}
+
+async function observeProductsBatch(request, db) {
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const observations = Array.isArray(payload) ? payload : payload?.observations;
+  if (!Array.isArray(observations)) return json({ error: "observations must be an array" }, 400);
+  if (observations.length > 100) return json({ error: "observations must contain at most 100 items" }, 400);
+
+  const results = [];
+  for (const observation of observations) {
+    const validationError = validateObservation(observation);
+    if (validationError) {
+      results.push({ ok: false, error: validationError, joybuy_product_id: observation?.joybuy_product_id ?? null });
+      continue;
+    }
+
+    try {
+      const product = await upsertProduct(db, observation);
+      const inserted = await maybeInsertPricePoint(db, product.id, observation);
+      results.push({ ok: true, joybuy_product_id: observation.joybuy_product_id, inserted });
+    } catch (error) {
+      results.push({ ok: false, error: error.message, joybuy_product_id: observation.joybuy_product_id });
+    }
+  }
+
+  const inserted = results.filter((result) => result.ok && result.inserted).length;
+  const failed = results.filter((result) => !result.ok).length;
+  return json({ ok: failed === 0, inserted, failed, results });
 }
 
 async function runCollector(env) {
