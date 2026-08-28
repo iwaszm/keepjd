@@ -71,13 +71,15 @@ function extractNextScripts(html) {
 
 function collectFromProductUrls(text, found, capturedAt) {
   const productUrlPattern = /(?:https?:\/\/(?:www\.)?joybuy\.de)?\/dp\/[^"'<>\\\s]+/gi;
-  let match;
-  while ((match = productUrlPattern.exec(text))) {
+  const matches = [...text.matchAll(productUrlPattern)];
+
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
     const id = extractProductIdFromUrlText(match[0]);
     if (!id || found.has(id)) continue;
 
-    const windowText = surroundingText(text, match.index, 1200, 2200);
-    const price = extractPriceFromProductWindow(windowText);
+    const windowText = productWindowFromMatches(text, matches, index);
+    const price = extractPriceFromProductWindow(windowText, id);
     if (!isPlausibleProductPrice(price)) continue;
 
     found.set(id, buildObservation(id, price, capturedAt));
@@ -86,12 +88,14 @@ function collectFromProductUrls(text, found, capturedAt) {
 
 function collectFromStructuredIds(text, found, capturedAt) {
   const idPattern = /["']?(?:skuId|sku|productId|wareId|itemId)["']?\s*[:=]\s*["']?([A-Za-z0-9_-]{5,})["']?/gi;
-  let match;
-  while ((match = idPattern.exec(text))) {
+  const matches = [...text.matchAll(idPattern)];
+
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
     const id = cleanProductId(match[1]);
     if (!id || found.has(id)) continue;
 
-    const windowText = surroundingText(text, match.index, 900, 2200);
+    const windowText = productWindowFromMatches(text, matches, index);
     const price = extractPriceFromProductWindow(windowText, id);
     if (!isPlausibleProductPrice(price)) continue;
 
@@ -112,11 +116,14 @@ function buildObservation(id, price, capturedAt) {
 }
 
 function extractPriceFromProductWindow(text, id = "") {
-  const jsonLdPrice = extractJsonLdOfferPrice(text);
+  const jsonLdPrice = extractJsonLdOfferPrice(text, id);
   if (jsonLdPrice !== null) return jsonLdPrice;
 
   const eventPrice = id ? extractSearchEventPrice(text, id) : null;
   if (eventPrice !== null) return eventPrice;
+
+  const euroPrice = parseEuroPrice(text);
+  if (isPlausibleProductPrice(euroPrice)) return euroPrice;
 
   const candidates = [];
   for (let rank = 0; rank < SCRIPT_PRICE_KEYS.length; rank += 1) {
@@ -139,7 +146,11 @@ function extractPriceFromProductWindow(text, id = "") {
   return candidates[0]?.price ?? null;
 }
 
-function extractJsonLdOfferPrice(text) {
+function extractJsonLdOfferPrice(text, id = "") {
+  if (id && !new RegExp(`/dp/(?:[^"'<>\\\\\\s]+/)?${escapeRegExp(id)}(?:[?#"'<>\\\\\\s]|$)`, "i").test(text)) {
+    return null;
+  }
+
   const patterns = [
     /"offers"\s*:\s*\{[\s\S]{0,800}?"price"\s*:\s*"([0-9]+(?:[.,][0-9]{1,2})?)"[\s\S]{0,300}?"priceCurrency"\s*:\s*"EUR"/i,
     /"offers"\s*:\s*\{[\s\S]{0,800}?"priceCurrency"\s*:\s*"EUR"[\s\S]{0,300}?"price"\s*:\s*"([0-9]+(?:[.,][0-9]{1,2})?)"/i
@@ -155,6 +166,12 @@ function extractSearchEventPrice(text, id) {
   const pattern = new RegExp(`${escapeRegExp(id)},[^"']{0,220}?([0-9]{1,5}(?:\\.[0-9]{2,6}))`, "i");
   const price = parseNumericPrice(text.match(pattern)?.[1]);
   return isPlausibleProductPrice(price) ? price : null;
+}
+
+function productWindowFromMatches(text, matches, index) {
+  const start = matches[index].index;
+  const nextStart = matches[index + 1]?.index ?? text.length;
+  return text.slice(start, nextStart);
 }
 
 function extractProductIdFromUrlText(value) {

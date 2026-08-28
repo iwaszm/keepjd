@@ -1,12 +1,13 @@
 # Joybuy Price History Tracker
 
-A lightweight Keepa-style MVP for `joybuy.de`. The Chrome extension passively captures product prices while the user browses Joybuy pages, stores daily price points in Cloudflare D1 through a Worker API, and shows a compact 30/90 day price chart on product detail pages.
+A lightweight Keepa-style MVP for `joybuy.de`. The regular Chrome extension shows compact 30/90 day price history charts on product detail pages. Data collection is handled separately by the background collector extension and stored in Cloudflare D1 through a Worker API.
 
 ## Current Scope
 
 This project is currently optimized for low-cost validation, not full-site automated crawling.
 
-- Chrome extension: passive capture from real browsing sessions and product-page chart injection.
+- Chrome extension: product-page chart injection and historical price display.
+- Background Chrome extension: listing-page collection from configured target URLs.
 - Cloudflare Worker: API layer, D1 persistence, optional scheduled collector.
 - D1 database: minimal daily price history.
 - No user accounts, alerts, recommendations, affiliate logic, or backfilled historical data.
@@ -15,10 +16,8 @@ This project is currently optimized for low-cost validation, not full-site autom
 
 - `extension/` - Chrome Manifest V3 extension.
   - `manifest.json` declares Joybuy page injection and Worker host access.
-  - `content.js` injects the chart, extracts visible prices, scans Next.js script payloads, and posts observations.
+  - `content.js` injects the chart, detects the current product ID and visible price, and reads price history from the Worker.
   - `styles.css` styles the compact floating chart panel.
-  - `background.js` contains a best-effort alarm collector for configured tracked products.
-  - `tracked-products.js` is a small legacy seed list for the background collector.
 - `background-extension/` - Separate Ubuntu-oriented Chrome extension for background listing-page collection.
   - Fetches configured search/listing URLs page by page without opening tabs.
   - Parses `self.__next_s` and `self.__next_f` script payloads for product IDs and prices.
@@ -235,17 +234,10 @@ For local Worker testing, temporarily point that constant to the Wrangler dev UR
 
 ## Extension Behavior
 
-On any `joybuy.de` page:
-
-- The content script is injected by Manifest V3.
-- Every few seconds it passively scans script payloads such as `self.__next_s` and `self.__next_f`.
-- It extracts product IDs and nearby price values from the page's embedded Next.js data.
-- It posts valid observations to `/products/observe`.
-- It sends minimal data: `joybuy_product_id`, `price`, `captured_at`.
-
 On Joybuy product detail pages:
 
-- It also detects the current product ID and visible current price.
+- The content script is injected by Manifest V3.
+- It detects the current product ID and visible current price.
 - It injects a compact floating chart panel.
 - The panel has 30 and 90 day tabs.
 - Each tab shows the lowest price in that range.
@@ -254,7 +246,9 @@ On Joybuy product detail pages:
 
 Known behavior:
 
-- Search/category/home pages do not show the chart panel, but passive capture still runs.
+- Search/category/home pages do not show the chart panel and are not collected by the regular extension.
+- The regular extension never posts observations to `/products/observe`.
+- Listing-page data collection lives in `background-extension/`, which fetches configured target pages, parses Next.js payloads, and posts observations.
 - Out-of-stock detection is not reliable in the minimal data mode. If there is no price, no price point is written. Current stored `availability` values are not reliable enough for product decisions.
 
 ## Optional Ubuntu Playwright Collector
@@ -309,7 +303,9 @@ Syntax-check key JS files:
 
 ```bash
 node --check extension/content.js
-node --check extension/background.js
+node --check background-extension/background.js
+node --check background-extension/parser.js
+node --check background-extension/popup.js
 node --check worker/src/index.js
 ```
 
@@ -333,7 +329,7 @@ If creating a new Cloudflare project/database, update these values:
 - D1 `database_name`
 - D1 `database_id`
 - `extension/content.js` `API_BASE_URL`
-- `extension/background.js` `API_BASE_URL`
+- `background-extension/config.js` `API_BASE_URL`
 
 ## Current Deployed Resources
 

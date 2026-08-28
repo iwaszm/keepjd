@@ -2,33 +2,12 @@ const API_BASE_URL = "https://joybuy-price-history.zhangmeng43.workers.dev";
 const ROOT_ID = "joybuy-price-history-tracker-root";
 const RANGES = ["30d", "90d"];
 const MAX_BOOT_ATTEMPTS = 20;
-const SCRIPT_CAPTURE_LIMIT = 200;
-const SCRIPT_CAPTURE_DELAY_MS = 700;
-const PASSIVE_CAPTURE_INTERVAL_MS = 5000;
-const SCRIPT_PRICE_KEYS = [
-  "promotionPrice",
-  "promoPrice",
-  "salePrice",
-  "sellingPrice",
-  "skuPrice",
-  "realPrice",
-  "currentPrice",
-  "displayPrice",
-  "jdPrice",
-  "price"
-];
-const SCRIPT_PRICE_CONTEXT_BLOCKLIST = /(?:unit|unitPrice|unit_price|basePrice|base_price|referencePrice|reference_price|pricePer|price_per|perPrice|per_price|grundpreis|basispreis|stückpreis|shipping|delivery|freight|tax|vat|discount|coupon|voucher|saving|save|points|installment|threshold)/i;
-const GENERIC_PRICE_CONTEXT_ALLOWLIST = /(?:priceCurrency|offers|itemCommonView|skuId|skuUuid|productId|wareId|Product|ListItem)/i;
-const observedCurrentPriceKeys = new Set();
-const observedScriptPriceKeys = new Set();
 const state = {
   activeRange: "30d",
   href: "",
   lastProductId: "",
   lastPrice: null,
   syncTimer: 0,
-  scriptCaptureTimer: 0,
-  scriptCaptureInFlight: false,
   rangeMins: Object.fromEntries(RANGES.map((range) => [range, null]))
 };
 
@@ -36,12 +15,9 @@ boot();
 installUrlChangeHooks();
 observePageChanges();
 window.setInterval(() => scheduleSync("interval"), 1500);
-window.setInterval(() => scheduleScriptPriceCapture(null), PASSIVE_CAPTURE_INTERVAL_MS);
-window.setTimeout(() => scheduleScriptPriceCapture(null), SCRIPT_CAPTURE_DELAY_MS);
 
 function boot(attempt = 0) {
   if (!isProductPageCandidate()) {
-    scheduleScriptPriceCapture(null);
     if (attempt < 3) window.setTimeout(() => boot(attempt + 1), 500);
     return;
   }
@@ -65,12 +41,7 @@ function extractSnapshotFromPage() {
 
   return {
     joybuy_product_id: joybuyProductId,
-    title: null,
-    price,
-    list_price: extractLabeledPrice(["UVP", "RRP", "WAS"]),
-    promo_price: extractLabeledPrice(["Willkommensangebot", "Blitzangebot", "Promo", "Angebot"]),
-    availability: extractAvailability(),
-    captured_at: captureDate()
+    price
   };
 }
 
@@ -139,14 +110,6 @@ function syncPanel() {
     loadRangeMinimums(root, snapshot.joybuy_product_id);
   }
 
-  if (priceChanged || productChanged) {
-    maybeObserveCurrentProduct(root, snapshot);
-  }
-
-  if (priceChanged || productChanged || hrefChanged) {
-    scheduleScriptPriceCapture(root);
-  }
-
   return true;
 }
 
@@ -187,66 +150,6 @@ function updatePanelMeta(root, snapshot) {
   if (priceNode) priceNode.textContent = snapshot.price === null ? "--" : formatEuro(snapshot.price);
 
   updateRangeButtons(root);
-}
-
-function maybeObserveCurrentProduct(root, snapshot) {
-  if (snapshot.price === null) return;
-
-  const capturedAt = captureDate();
-  const observation = { ...snapshot, captured_at: capturedAt };
-  const key = `${observation.joybuy_product_id}:${capturedAt}:${observation.price}`;
-  if (observedCurrentPriceKeys.has(key)) return;
-
-  observedCurrentPriceKeys.add(key);
-  postObservation(observation).then(() => {
-    loadAndRender(root, observation.joybuy_product_id, state.activeRange);
-    loadRangeMinimums(root, observation.joybuy_product_id);
-  }).catch(() => {
-    observedCurrentPriceKeys.delete(key);
-  });
-}
-
-function scheduleScriptPriceCapture(root) {
-  window.clearTimeout(state.scriptCaptureTimer);
-  state.scriptCaptureTimer = window.setTimeout(() => {
-    captureScriptPriceObservations(root);
-  }, SCRIPT_CAPTURE_DELAY_MS);
-}
-
-async function captureScriptPriceObservations(root) {
-  if (state.scriptCaptureInFlight) return;
-  state.scriptCaptureInFlight = true;
-
-  try {
-    const observations = extractScriptPriceObservations();
-    let shouldRefreshCurrentChart = false;
-
-    for (const observation of observations) {
-      const key = `${observation.joybuy_product_id}:${observation.price}`;
-      if (observedScriptPriceKeys.has(key)) continue;
-
-      observedScriptPriceKeys.add(key);
-      try {
-        await postObservation(observation);
-        shouldRefreshCurrentChart ||= observation.joybuy_product_id === state.lastProductId;
-      } catch {
-        observedScriptPriceKeys.delete(key);
-      }
-    }
-
-    if (root && shouldRefreshCurrentChart && state.lastProductId) {
-      loadAndRender(root, state.lastProductId, state.activeRange);
-    }
-  } finally {
-    state.scriptCaptureInFlight = false;
-  }
-}
-async function postObservation(snapshot) {
-  await fetch(`${API_BASE_URL}/products/observe`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(snapshot)
-  });
 }
 
 function observePageChanges() {
@@ -369,133 +272,6 @@ function extractProductId(rawUrl, html) {
   return null;
 }
 
-function extractScriptPriceObservations() {
-  const found = new Map();
-  const capturedAt = captureDate();
-  const scripts = [...document.scripts]
-    .map((script) => script.textContent || "")
-    .filter((text) => /self\.__next_[sf]|\/dp\/|skuId|productId|wareId|price/i.test(text));
-
-  for (const scriptText of scripts) {
-    const text = normalizeScriptText(scriptText);
-    collectPricesFromProductUrls(text, found, capturedAt);
-    collectPricesFromStructuredIds(text, found, capturedAt);
-    if (found.size >= SCRIPT_CAPTURE_LIMIT) break;
-  }
-
-  return [...found.values()].slice(0, SCRIPT_CAPTURE_LIMIT);
-}
-
-function collectPricesFromProductUrls(text, found, capturedAt) {
-  const productUrlPattern = /(?:https?:\/\/(?:www\.)?joybuy\.de)?(\/dp\/(?:[^"'<>\\\s]+\/)?([A-Za-z0-9_-]{5,}))(?:\?[^"'<>\\\s]*)?/gi;
-  let match;
-  while ((match = productUrlPattern.exec(text)) && found.size < SCRIPT_CAPTURE_LIMIT) {
-    const id = cleanProductId(match[2]);
-    if (!id || found.has(id)) continue;
-
-    const windowText = surroundingText(text, match.index, 1400, 2600);
-    const price = extractPriceFromScriptWindow(windowText);
-    if (!isPlausibleProductPrice(price)) continue;
-
-    found.set(id, {
-      joybuy_product_id: id,
-      title: null,
-      price,
-      list_price: null,
-      promo_price: null,
-      availability: extractAvailabilityFromText(windowText),
-      captured_at: capturedAt
-    });
-  }
-}
-
-function collectPricesFromStructuredIds(text, found, capturedAt) {
-  const idPattern = /["']?(?:skuId|sku|productId|wareId|itemId)["']?\s*[:=]\s*["']?([A-Za-z0-9_-]{5,})["']?/gi;
-  let match;
-  while ((match = idPattern.exec(text)) && found.size < SCRIPT_CAPTURE_LIMIT) {
-    const id = cleanProductId(match[1]);
-    if (!id || found.has(id)) continue;
-
-    const windowText = surroundingText(text, match.index, 1600, 2600);
-    const price = extractPriceFromScriptWindow(windowText);
-    if (!isPlausibleProductPrice(price)) continue;
-
-    found.set(id, {
-      joybuy_product_id: id,
-      title: null,
-      price,
-      list_price: null,
-      promo_price: null,
-      availability: extractAvailabilityFromText(windowText),
-      captured_at: capturedAt
-    });
-  }
-}
-
-function extractPriceFromScriptWindow(text) {
-  const candidates = [];
-
-  for (let rank = 0; rank < SCRIPT_PRICE_KEYS.length; rank += 1) {
-    const key = SCRIPT_PRICE_KEYS[rank];
-    const pattern = new RegExp(`["']?${key}["']?\\s*[:=]\\s*["']?(?:€\\s*)?([0-9]{1,5}(?:[.,][0-9]{1,2})?)`, "gi");
-    let match;
-    while ((match = pattern.exec(text))) {
-      const context = surroundingText(text, match.index, 90, 90);
-      if (SCRIPT_PRICE_CONTEXT_BLOCKLIST.test(context)) continue;
-      if (key === "price" && !GENERIC_PRICE_CONTEXT_ALLOWLIST.test(context)) continue;
-
-      const price = Number(match[1].replace(",", "."));
-      if (isPlausibleProductPrice(price)) {
-        candidates.push({ rank, index: match.index, price });
-      }
-    }
-  }
-
-  candidates.sort((a, b) => a.rank - b.rank || a.index - b.index);
-  return candidates[0]?.price ?? null;
-}
-
-function extractScriptTitle(text) {
-  const match = text.match(/["']?(?:skuName|productName|title|name)["']?\s*[:=]\s*["']([^"']{3,180})["']/i);
-  return match?.[1] ? decodeHtmlEntities(match[1]).trim() : "";
-}
-
-function extractAvailabilityFromText(text) {
-  const normalized = text.toLowerCase();
-  if (/nicht verfügbar|ausverkauft|out[_\s-]?of[_\s-]?stock|unavailable/.test(normalized)) return "out_of_stock";
-  if (/auf lager|in[_\s-]?stock|available|verfügbar/.test(normalized)) return "in_stock";
-  return "unknown";
-}
-
-function normalizeScriptText(text) {
-  return String(text || "")
-    .replace(/\\u002F/gi, "/")
-    .replace(/\\u003C/gi, "<")
-    .replace(/\\u003E/gi, ">")
-    .replace(/\\u0026/gi, "&")
-    .replace(/\\"/g, "\"")
-    .replace(/\\'/g, "'")
-    .replace(/\\\\/g, "\\");
-}
-
-function surroundingText(text, index, before, after) {
-  return text.slice(Math.max(0, index - before), Math.min(text.length, index + after));
-}
-
-function cleanProductId(value) {
-  const match = String(value || "").match(/[A-Za-z0-9_-]{5,}/);
-  return match ? match[0].replace(/\.html$/i, "") : "";
-}
-
-function absoluteJoybuyUrl(path, id) {
-  try {
-    const url = new URL(path, location.origin);
-    url.hash = "";
-    return url.toString();
-  } catch {
-    return `https://www.joybuy.de/dp/${encodeURIComponent(id)}`;
-  }
-}
 function extractVisiblePrice() {
   const primaryPrice = findPriceInSelectors([
     "[class*='skuPriceReal' i]",
@@ -528,16 +304,6 @@ function isPlausibleProductPrice(price) {
   return typeof price === "number" && Number.isFinite(price) && price >= 0.1 && price <= 10000;
 }
 
-function extractLabeledPrice(labels) {
-  const text = document.body.innerText;
-  for (const label of labels) {
-    const pattern = new RegExp(`${escapeRegExp(label)}\\s*:?\\s*(.{0,40}?(?:€\\s*\\d[\\d.\\s]*[,.]\\d{2}|\\d[\\d.\\s]*[,.]\\d{2}\\s*€))`, "i");
-    const price = extractFirstEuroPrice(text.match(pattern)?.[1] || "");
-    if (price !== null) return price;
-  }
-  return null;
-}
-
 function extractFirstEuroPrice(value) {
   const text = String(value || "").replace(/\u00a0/g, " ");
   const match = text.match(/€\s*(\d{1,3}(?:[.\s]\d{3})*|\d+)([,.])(\d{2})(?!\d)|(\d{1,3}(?:[.\s]\d{3})*|\d+)([,.])(\d{2})(?!\d)\s*€/);
@@ -548,44 +314,14 @@ function extractFirstEuroPrice(value) {
   return Number.isFinite(price) ? price : null;
 }
 
-function extractTitle() {
-  return document.querySelector("h1")?.textContent?.trim() || document.title.replace(/\s*\|\s*Joybuy.*/i, "").trim();
-}
-
-function canonicalUrl() {
-  const canonical = document.querySelector("link[rel='canonical']")?.href || location.href;
-  const url = new URL(canonical);
-  url.hash = "";
-  return url.toString();
-}
-
-function extractAvailability() {
-  const text = document.body.innerText.toLowerCase();
-  if (/nicht verfügbar|ausverkauft|out of stock|currently unavailable/.test(text)) return "out_of_stock";
-  if (/lieferung bis|auf lager|in stock|verfügbar|available/.test(text)) return "in_stock";
-  return "unknown";
-}
-
 function formatEuro(value) {
   return new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" }).format(Number(value));
 }
 
-function captureDate() {
-  return new Date().toISOString().slice(0, 10);
-}
 function formatDateMMDD(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${month}-${day}`;
-}
-
-function decodeHtmlEntities(value) {
-  const textarea = document.createElement("textarea");
-  textarea.innerHTML = value;
-  return textarea.value;
-}
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

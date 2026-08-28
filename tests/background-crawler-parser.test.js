@@ -47,6 +47,38 @@ test("extractSearchPageObservations ignores shipping price near generic price ke
   assert.deepEqual(extractSearchPageObservations(html, "2026-08-27"), []);
 });
 
+test("extractSearchPageObservations keeps adjacent product prices separated", () => {
+  const html = `
+    <script>self.__next_s.push([0,{"children":"
+      <a href=\\"/dp/sauce-one/10100568\\">Sauce One</a>
+      <span>4,18 €</span>
+      <a href=\\"/dp/sauce-two/10145624\\">Sauce Two</a>
+      <span>1,85 €</span>
+    "}])</script>
+  `;
+
+  assert.deepEqual(extractSearchPageObservations(html, "2026-08-28"), [
+    {
+      joybuy_product_id: "10100568",
+      title: null,
+      price: 4.18,
+      list_price: null,
+      promo_price: null,
+      availability: "unknown",
+      captured_at: "2026-08-28"
+    },
+    {
+      joybuy_product_id: "10145624",
+      title: null,
+      price: 1.85,
+      list_price: null,
+      promo_price: null,
+      availability: "unknown",
+      captured_at: "2026-08-28"
+    }
+  ]);
+});
+
 test("extractMaxPageNumber reads pagination links and labels", () => {
   const html = `
     <nav>

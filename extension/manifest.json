@@ -3,9 +3,7 @@
   "name": "Joybuy Price History Tracker",
   "description": "Shows lightweight historical price charts on joybuy.de product pages.",
   "version": "0.1.0",
-  "permissions": [
-    "alarms"
-  ],
+  "permissions": [],
   "host_permissions": [
     "https://joybuy.de/*",
     "https://www.joybuy.de/*",
@@ -27,9 +25,5 @@
       ],
       "run_at": "document_idle"
     }
-  ],
-  "background": {
-    "service_worker": "background.js",
-    "type": "module"
-  }
+  ]
 }
