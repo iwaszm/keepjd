@@ -40,6 +40,22 @@ export function extractSearchPageObservations(html, capturedAt = captureDate()) 
   return [...found.values()];
 }
 
+export function extractMaxPageNumber(html) {
+  const pageNumbers = [];
+  const text = String(html || "");
+
+  for (const match of text.matchAll(/aria-label=["']Go to page\s+(\d+)["']/gi)) {
+    pageNumbers.push(Number(match[1]));
+  }
+
+  for (const match of text.matchAll(/[?&amp;]page=(\d+)(?:[&#"']|&amp;|$)/gi)) {
+    pageNumbers.push(Number(match[1]));
+  }
+
+  const validPageNumbers = pageNumbers.filter((value) => Number.isInteger(value) && value > 0);
+  return validPageNumbers.length ? Math.max(...validPageNumbers) : null;
+}
+
 function extractNextScripts(html) {
   const scripts = [];
   const pattern = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;

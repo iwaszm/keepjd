@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildPageUrl,
+  extractMaxPageNumber,
   extractSearchPageObservations,
   pageNumberFromSeed
 } from "../background-extension/parser.js";
@@ -44,4 +45,19 @@ test("extractSearchPageObservations ignores shipping price near generic price ke
   `;
 
   assert.deepEqual(extractSearchPageObservations(html, "2026-08-27"), []);
+});
+
+test("extractMaxPageNumber reads pagination links and labels", () => {
+  const html = `
+    <nav>
+      <li><a aria-label="Go to page 49" href="/s?k=x&amp;page=49">49</a></li>
+      <li><a class="MuiPaginationItem-page" aria-label="Go to page 261" href="/s?k=x&amp;l1=2411&amp;page=261&amp;logId=abc">261</a></li>
+    </nav>
+  `;
+
+  assert.equal(extractMaxPageNumber(html), 261);
+});
+
+test("extractMaxPageNumber returns null when pagination is absent", () => {
+  assert.equal(extractMaxPageNumber("<html><body>No pagination</body></html>"), null);
 });

@@ -1,13 +1,18 @@
 import {
   API_BASE_URL,
-  MAX_PAGES_PER_SEED,
+  MAX_PAGES_PER_TARGET,
   OBSERVATION_DELAY_MS,
   PAGE_DELAY_MS,
   PAGES_PER_ALARM_TICK,
-  SEED_PAGES,
   STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES
 } from "./config.js";
-import { buildPageUrl, extractSearchPageObservations, pageNumberFromSeed } from "./parser.js";
+import { TARGET_PAGES } from "./target-pages.js";
+import {
+  buildPageUrl,
+  extractMaxPageNumber,
+  extractSearchPageObservations,
+  pageNumberFromSeed
+} from "./parser.js";
 
 const ALARM_NAME = "joybuy-background-page-collector";
 const STORAGE_KEY = "joybuyBackgroundCollectorState";
@@ -53,13 +58,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 async function startCollection(reason) {
-  console.info("Joybuy background collection starting", { reason, seeds: SEED_PAGES.length });
+  console.info("Joybuy background collection starting", { reason, targets: TARGET_PAGES.length });
   await setBadge("RUN", "#2563eb");
   const startedAt = new Date().toISOString();
-  const queue = SEED_PAGES.map((seedUrl) => ({
-    seedUrl,
-    nextPage: pageNumberFromSeed(seedUrl),
-    maxPage: pageNumberFromSeed(seedUrl) + MAX_PAGES_PER_SEED - 1,
+  const queue = TARGET_PAGES.map((targetUrl, index) => ({
+    targetIndex: index + 1,
+    targetUrl,
+    nextPage: pageNumberFromSeed(targetUrl),
+    maxPage: pageNumberFromSeed(targetUrl) + MAX_PAGES_PER_TARGET - 1,
     seenProductIds: [],
     emptyOrDuplicatePages: 0,
     done: false
@@ -76,7 +82,7 @@ async function startCollection(reason) {
       observationsFound: 0,
       observationsPosted: 0,
       observationsFailed: 0,
-      seedsDone: 0
+      targetsDone: 0
     },
     lastError: null
   });
@@ -115,11 +121,11 @@ async function processQueue() {
 
 async function collectPage(state, item) {
   if (item.nextPage > item.maxPage) {
-    markSeedDone(state, item);
+    markTargetDone(state, item);
     return;
   }
 
-  const pageUrl = buildPageUrl(item.seedUrl, item.nextPage);
+  const pageUrl = buildPageUrl(item.targetUrl, item.nextPage);
   console.info("Joybuy collector fetching page", pageUrl);
 
   try {
@@ -130,6 +136,13 @@ async function collectPage(state, item) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
     const html = await response.text();
+    const detectedMaxPage = extractMaxPageNumber(html);
+    if (detectedMaxPage !== null) {
+      item.detectedMaxPage = detectedMaxPage;
+      item.maxPage = Math.min(item.maxPage, detectedMaxPage);
+      item.maxPageDetected = true;
+    }
+
     const observations = extractSearchPageObservations(html);
     const seen = new Set(item.seenProductIds);
     const freshObservations = observations.filter((observation) => !seen.has(observation.joybuy_product_id));
@@ -153,13 +166,19 @@ async function collectPage(state, item) {
 
     console.info("Joybuy collector page result", {
       pageUrl,
+      targetIndex: item.targetIndex,
+      detectedMaxPage,
+      maxPage: item.maxPage,
+      nextPage: item.nextPage,
       observations: observations.length,
       freshObservations: freshObservations.length,
       totals: state.totals
     });
 
-    if (item.emptyOrDuplicatePages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
-      markSeedDone(state, item);
+    if (!item.maxPageDetected && item.emptyOrDuplicatePages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
+      markTargetDone(state, item);
+    } else if (item.nextPage > item.maxPage) {
+      markTargetDone(state, item);
     }
   } catch (error) {
     item.lastError = `${pageUrl}: ${error.message}`;
@@ -181,10 +200,10 @@ async function postObservation(observation) {
   if (!response.ok) throw new Error(`observe failed: ${response.status}`);
 }
 
-function markSeedDone(state, item) {
+function markTargetDone(state, item) {
   item.done = true;
   item.doneAt = new Date().toISOString();
-  state.totals.seedsDone += 1;
+  state.totals.targetsDone += 1;
 }
 
 async function setIdleStatus(reason) {
@@ -200,7 +219,7 @@ async function setIdleStatus(reason) {
       observationsFound: 0,
       observationsPosted: 0,
       observationsFailed: 0,
-      seedsDone: 0
+      targetsDone: 0
     },
     lastError: null
   });

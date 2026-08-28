@@ -2,17 +2,17 @@
 
 This is a separate Ubuntu-oriented Chrome extension for background collection. It does not inject a chart panel and does not modify the normal `extension/` browser experience.
 
-## Configure Seeds
+## Configure Target Pages
 
-Edit `config.js`:
+Edit `target-pages.js`:
 
 ```js
-export const SEED_PAGES = [
+export const TARGET_PAGES = [
   "https://www.joybuy.de/s?k=%E4%B8%96%E7%95%8C%E9%A3%9F%E5%93%81&l1=2411&page=1"
 ];
 ```
 
-Each seed is treated as a paginated listing URL. The collector replaces the `page` query parameter with `1, 2, 3...` and stops when it reaches `MAX_PAGES_PER_SEED` or sees a duplicate/empty page.
+Each target is treated as a paginated listing URL. The collector processes targets in order. For each target, it fetches the first configured page, reads pagination links such as `aria-label="Go to page 261"` or `page=261`, then fetches every page up to the detected maximum before moving to the next target. `MAX_PAGES_PER_TARGET` remains a safety cap.
 
 ## Run
 
