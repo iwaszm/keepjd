@@ -8,11 +8,13 @@ Edit `target-pages.js`:
 
 ```js
 export const TARGET_PAGES = [
-  "https://www.joybuy.de/s?k=%E4%B8%96%E7%95%8C%E9%A3%9F%E5%93%81&l1=2411&page=1"
+  { url: "https://www.joybuy.de/s?b1=5825", label: "常温食品", maxPage: 376 }
 ];
 ```
 
-Each target is treated as a paginated listing URL. The collector processes targets in order. For each target, it fetches the first configured page, reads pagination links such as `aria-label="Go to page 261"` or `page=261`, then fetches every page up to the detected maximum before moving to the next target. `MAX_PAGES_PER_TARGET` remains a safety cap.
+Each target is treated as a paginated listing URL. The collector processes targets in order. When `maxPage` is set, it fetches every page up to that configured maximum before moving to the next target. This is preferred for Joybuy category pages because the rendered pagination can expose only a local page window such as pages 1-7, not the real category maximum.
+
+String targets are still supported as a fallback. For those, the collector uses `MAX_PAGES_PER_TARGET` and any detected pagination numbers as hints.
 
 ## Run
 

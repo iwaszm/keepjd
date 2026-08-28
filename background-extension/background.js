@@ -90,19 +90,25 @@ async function startCollection(reason) {
   console.info("Joybuy background collection starting", { reason, targets: TARGET_PAGES.length });
   await setBadge("RUN", "#2563eb");
   const startedAt = new Date().toISOString();
-  const queue = TARGET_PAGES.map((targetUrl, index) => ({
-    targetIndex: index + 1,
-    targetUrl,
-    nextPage: pageNumberFromSeed(targetUrl),
-    maxPage: pageNumberFromSeed(targetUrl) + MAX_PAGES_PER_TARGET - 1,
-    seenProductIds: [],
-    emptyPages: 0,
-    pagesFetched: 0,
-    observationsFound: 0,
-    observationsPosted: 0,
-    observationsSkipped: 0,
-    done: false
-  }));
+  const queue = TARGET_PAGES.map((target, index) => {
+    const normalizedTarget = normalizeTarget(target);
+    const startPage = pageNumberFromSeed(normalizedTarget.url);
+    return {
+      targetIndex: index + 1,
+      targetUrl: normalizedTarget.url,
+      targetLabel: normalizedTarget.label,
+      nextPage: startPage,
+      maxPage: normalizedTarget.maxPage ?? startPage + MAX_PAGES_PER_TARGET - 1,
+      configuredMaxPage: normalizedTarget.maxPage ?? null,
+      seenProductIds: [],
+      emptyPages: 0,
+      pagesFetched: 0,
+      observationsFound: 0,
+      observationsPosted: 0,
+      observationsSkipped: 0,
+      done: false
+    };
+  });
 
   await saveState({
     running: true,
@@ -217,8 +223,10 @@ async function collectPage(state, item) {
     const detectedMaxPage = extractMaxPageNumber(html);
     if (detectedMaxPage !== null) {
       item.detectedMaxPage = detectedMaxPage;
-      item.maxPage = Math.min(item.maxPage, detectedMaxPage);
       item.maxPageDetected = true;
+      if (!item.configuredMaxPage) {
+        item.maxPage = Math.max(item.maxPage, detectedMaxPage);
+      }
     }
 
     const observations = extractSearchPageObservations(html);
@@ -419,6 +427,7 @@ function normalizeState(state) {
 
   state.queue = state.queue.map((item) => ({
     ...item,
+    configuredMaxPage: item.configuredMaxPage ?? null,
     emptyPages: item.emptyPages ?? item.emptyOrDuplicatePages ?? 0,
     pagesFetched: item.pagesFetched ?? 0,
     observationsFound: item.observationsFound ?? 0,
@@ -426,6 +435,19 @@ function normalizeState(state) {
     observationsSkipped: item.observationsSkipped ?? 0
   }));
   return state;
+}
+
+function normalizeTarget(target) {
+  if (typeof target === "string") {
+    return { url: target, label: "", maxPage: null };
+  }
+
+  const maxPage = Number(target.maxPage);
+  return {
+    url: target.url,
+    label: target.label || "",
+    maxPage: Number.isInteger(maxPage) && maxPage > 0 ? maxPage : null
+  };
 }
 
 function sleep(ms) {
