@@ -1,10 +1,27 @@
 export const TARGET_PAGES = [
-  "https://www.joybuy.de/s?k=%E5%AE%B6%E5%B1%85%E3%80%81%E6%B4%97%E8%A1%A3%E5%8F%8A%E6%B8%85%E6%B4%81%E7%94%A8%E5%93%81&l1=2410", // 家居、洗衣及清洁用品
-  "https://www.joybuy.de/s?k=%E4%B8%96%E7%95%8C%E9%A3%9F%E5%93%81&l1=2411", // 世界食品
-  "https://www.joybuy.de/s?k=%E9%A3%9F%E5%93%81%E6%9F%9C&l1=2182", // 食品柜
-  "https://www.joybuy.de/s?k=%E5%AE%B6%E5%B1%85%E7%94%9F%E6%B4%97&l1=2412", // 家居生活
-  "https://www.joybuy.de/s?k=%E7%94%B5%E5%AD%90%E4%BA%A7%E5%93%81&l1=2276", // 电子产品
-  "https://www.joybuy.de/s?k=%E5%B0%8F%E5%AE%B6%E7%94%B5&l1=2481", // 小家电
-  "https://www.joybuy.de/s?k=%E8%AE%A1%E7%AE%97%E6%9C%BA%E5%8F%8A%E9%85%8D%E4%BB%B6&l1=2340", // 计算机及配件
-  "https://www.joybuy.de/s?k=DIY&l1=4048" // DIY
+  "https://www.joybuy.de/s?b1=4", // 美妆 370
+  "https://www.joybuy.de/s?b1=199", // 家用电器 145
+  "https://www.joybuy.de/s?b1=288", // 厨具餐具 170
+  "https://www.joybuy.de/s?b1=330", // 家纺 78
+  "https://www.joybuy.de/s?b1=425", // 家居装饰 38
+  "https://www.joybuy.de/s?b1=441", // 家具 252
+  "https://www.joybuy.de/s?b1=492", // 冷冻食品 38
+  "https://www.joybuy.de/s?b1=805", // 健康养生 39
+  "https://www.joybuy.de/s?b1=872", // 个人护理 157
+  "https://www.joybuy.de/s?b1=926", // 家居清洁 41
+  "https://www.joybuy.de/s?b1=999", // 母婴用品 59
+  "https://www.joybuy.de/s?b1=1481", // 宠物用品 111
+  "https://www.joybuy.de/s?b1=1819", // 运动户外 229
+  "https://www.joybuy.de/s?b1=1849", // 电子数码 160
+  "https://www.joybuy.de/s?b1=1989", // 电脑办公 107
+  "https://www.joybuy.de/s?b1=2049", // 游戏电竞 37
+  "https://www.joybuy.de/s?b1=2062", // 文具办公 60
+  "https://www.joybuy.de/s?b1=3102", // 玩具 134
+  "https://www.joybuy.de/s?b1=3815", // 家居用品 140
+  "https://www.joybuy.de/s?b1=4644", // 园艺庭院 94
+  "https://www.joybuy.de/s?b1=4702", // 灯具 41
+  "https://www.joybuy.de/s?b1=5349", // 家装建筑工具 75
+  "https://www.joybuy.de/s?b1=5825", // 常温食品 376
+  "https://www.joybuy.de/s?b1=5968", // 饮品 106
+  "https://www.joybuy.de/s?b1=8596" // 汽车用品配件 127
 ];
