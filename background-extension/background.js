@@ -97,6 +97,10 @@ async function startCollection(reason) {
     maxPage: pageNumberFromSeed(targetUrl) + MAX_PAGES_PER_TARGET - 1,
     seenProductIds: [],
     emptyPages: 0,
+    pagesFetched: 0,
+    observationsFound: 0,
+    observationsPosted: 0,
+    observationsSkipped: 0,
     done: false
   }));
 
@@ -191,7 +195,7 @@ async function resumeCollection() {
 
 async function collectPage(state, item) {
   if (item.nextPage > item.maxPage) {
-    markTargetDone(state, item);
+    markTargetDone(state, item, "max_page_reached");
     return true;
   }
 
@@ -249,6 +253,11 @@ async function collectPage(state, item) {
     item.retryAfter = null;
     item.nextPage += 1;
 
+    item.pagesFetched = (item.pagesFetched || 0) + 1;
+    item.observationsFound = (item.observationsFound || 0) + observations.length;
+    item.observationsPosted = (item.observationsPosted || 0) + postedCount;
+    item.observationsSkipped = (item.observationsSkipped || 0) + skippedCount;
+
     state.totals.pagesFetched += 1;
     state.totals.observationsFound += observations.length;
     state.totals.observationsPosted += postedCount;
@@ -268,9 +277,9 @@ async function collectPage(state, item) {
     });
 
     if (!item.maxPageDetected && item.emptyPages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
-      markTargetDone(state, item);
+      markTargetDone(state, item, "empty_page_stop");
     } else if (item.nextPage > item.maxPage) {
-      markTargetDone(state, item);
+      markTargetDone(state, item, "max_page_reached");
     }
   } catch (error) {
     item.lastError = `${pageUrl}: ${error.message}`;
@@ -278,6 +287,7 @@ async function collectPage(state, item) {
     state.totals.observationsFailed += 1;
     item.retryCount = (item.retryCount || 0) + 1;
     if (item.retryCount > MAX_PAGE_RETRIES) {
+      item.lastSkippedPageUrl = pageUrl;
       item.nextPage += 1;
       item.retryCount = 0;
       item.retryAfter = null;
@@ -302,9 +312,11 @@ async function postObservation(observation) {
   if (!response.ok) throw new Error(`observe failed: ${response.status}`);
 }
 
-function markTargetDone(state, item) {
+function markTargetDone(state, item, reason) {
+  if (item.done) return;
   item.done = true;
   item.doneAt = new Date().toISOString();
+  item.doneReason = reason;
   state.totals.targetsDone += 1;
 }
 
@@ -407,7 +419,11 @@ function normalizeState(state) {
 
   state.queue = state.queue.map((item) => ({
     ...item,
-    emptyPages: item.emptyPages ?? item.emptyOrDuplicatePages ?? 0
+    emptyPages: item.emptyPages ?? item.emptyOrDuplicatePages ?? 0,
+    pagesFetched: item.pagesFetched ?? 0,
+    observationsFound: item.observationsFound ?? 0,
+    observationsPosted: item.observationsPosted ?? 0,
+    observationsSkipped: item.observationsSkipped ?? 0
   }));
   return state;
 }

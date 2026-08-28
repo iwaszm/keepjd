@@ -9,6 +9,8 @@ const skippedNode = document.getElementById("skipped");
 const failedNode = document.getElementById("failed");
 const targetNode = document.getElementById("target");
 const pageNode = document.getElementById("page");
+const lastTargetPagesNode = document.getElementById("last-target-pages");
+const lastReasonNode = document.getElementById("last-reason");
 const errorNode = document.getElementById("error");
 
 startButton.addEventListener("click", async () => {
@@ -44,7 +46,10 @@ async function refreshState() {
   failedNode.textContent = totals.observationsFailed || 0;
   targetNode.textContent = targetText(state, queue, activeTarget);
   pageNode.textContent = activeTarget ? `${activeTarget.nextPage}/${activeTarget.detectedMaxPage || activeTarget.maxPage}` : "-";
-  startButton.disabled = Boolean(state.running);
+  const lastDoneTarget = [...queue].reverse().find((entry) => entry.done);
+  lastTargetPagesNode.textContent = lastDoneTarget ? `${lastDoneTarget.pagesFetched || 0}` : "-";
+  lastReasonNode.textContent = lastDoneTarget?.doneReason || "-";
+  startButton.disabled = Boolean(state.running || state.paused);
   pauseButton.disabled = !state.running && !state.paused;
   pauseButton.textContent = state.paused ? "Resume" : "Pause";
 
