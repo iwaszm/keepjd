@@ -1,9 +1,11 @@
 import {
   API_BASE_URL,
   MAX_PAGES_PER_TARGET,
+  MAX_PAGE_RETRIES,
   OBSERVATION_DELAY_MS,
   PAGE_DELAY_MS,
   PAGES_PER_ALARM_TICK,
+  RETRY_DELAY_MS,
   STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES,
   WRITE_UNCHANGED_OBSERVATIONS
 } from "./config.js";
@@ -24,7 +26,16 @@ console.info("Joybuy background collector service worker loaded");
 
 chrome.runtime.onInstalled.addListener(() => {
   console.info("Joybuy background collector installed");
-  setIdleStatus("installed");
+  restoreCollectionState("installed").catch((error) => {
+    console.error("Joybuy background collector restore failed", error);
+  });
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  console.info("Joybuy background collector startup");
+  restoreCollectionState("startup").catch((error) => {
+    console.error("Joybuy background collector startup restore failed", error);
+  });
 });
 
 chrome.action.onClicked.addListener(() => {
@@ -44,6 +55,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "GET_STATE") {
     loadState().then((state) => sendResponse({ ok: true, state })).catch((error) => {
+      sendResponse({ ok: false, error: error.message });
+    });
+    return true;
+  }
+
+  if (message?.type === "PAUSE_COLLECTION") {
+    pauseCollection().then(() => sendResponse({ ok: true })).catch((error) => {
+      console.error("Joybuy background collection failed to pause", error);
+      sendResponse({ ok: false, error: error.message });
+    });
+    return true;
+  }
+
+  if (message?.type === "RESUME_COLLECTION") {
+    resumeCollection().then(() => sendResponse({ ok: true })).catch((error) => {
+      console.error("Joybuy background collection failed to resume", error);
       sendResponse({ ok: false, error: error.message });
     });
     return true;
@@ -95,7 +122,7 @@ async function startCollection(reason) {
 
 async function processQueue() {
   const state = await loadState();
-  if (!state.running) return;
+  if (!state.running || state.paused) return;
   await setBadge("RUN", "#2563eb");
 
   let pagesLeft = PAGES_PER_ALARM_TICK;
@@ -112,7 +139,18 @@ async function processQueue() {
       return;
     }
 
-    await collectPage(state, item);
+    const didProcessPage = await collectPage(state, item);
+    state.updatedAt = new Date().toISOString();
+    await saveProgressState(state);
+    const latestState = await loadState();
+    if (!latestState.running || latestState.paused) {
+      chrome.alarms.clear(ALARM_NAME);
+      await setBadge(latestState.paused ? "PAUSE" : "", latestState.paused ? "#a16207" : "#6b7280");
+      return;
+    }
+
+    if (!didProcessPage) break;
+
     pagesLeft -= 1;
     if (pagesLeft > 0) await sleep(PAGE_DELAY_MS);
   }
@@ -122,10 +160,43 @@ async function processQueue() {
   chrome.alarms.create(ALARM_NAME, { delayInMinutes: 0.1 });
 }
 
+async function pauseCollection() {
+  const state = await loadState();
+  if (!state.running) return;
+
+  state.running = false;
+  state.paused = true;
+  state.pausedAt = new Date().toISOString();
+  state.updatedAt = state.pausedAt;
+  await saveState(state);
+  chrome.alarms.clear(ALARM_NAME);
+  await setBadge("PAUSE", "#a16207");
+}
+
+async function resumeCollection() {
+  const state = await loadState();
+  const hasPendingQueue = (state.queue || []).some((entry) => !entry.done);
+  if (!state.paused || !hasPendingQueue) return;
+
+  state.running = true;
+  state.paused = false;
+  state.pausedAt = null;
+  state.resumedAt = new Date().toISOString();
+  state.updatedAt = state.resumedAt;
+  state.finishedAt = null;
+  await saveState(state);
+  await setBadge("RUN", "#2563eb");
+  await processQueue();
+}
+
 async function collectPage(state, item) {
   if (item.nextPage > item.maxPage) {
     markTargetDone(state, item);
-    return;
+    return true;
+  }
+
+  if (item.retryAfter && Date.parse(item.retryAfter) > Date.now()) {
+    return false;
   }
 
   const pageUrl = buildPageUrl(item.targetUrl, item.nextPage);
@@ -174,6 +245,8 @@ async function collectPage(state, item) {
     item.lastPageFreshObservationCount = freshObservations.length;
     item.lastPagePostedObservationCount = postedCount;
     item.lastPageSkippedObservationCount = skippedCount;
+    item.retryCount = 0;
+    item.retryAfter = null;
     item.nextPage += 1;
 
     state.totals.pagesFetched += 1;
@@ -203,10 +276,20 @@ async function collectPage(state, item) {
     item.lastError = `${pageUrl}: ${error.message}`;
     state.lastError = item.lastError;
     state.totals.observationsFailed += 1;
-    item.nextPage += 1;
+    item.retryCount = (item.retryCount || 0) + 1;
+    if (item.retryCount > MAX_PAGE_RETRIES) {
+      item.nextPage += 1;
+      item.retryCount = 0;
+      item.retryAfter = null;
+    } else {
+      item.retryAfter = new Date(Date.now() + RETRY_DELAY_MS).toISOString();
+    }
     await setBadge("ERR", "#b91c1c");
     console.error("Joybuy collector page failed", item.lastError);
+    return false;
   }
+
+  return true;
 }
 
 async function postObservation(observation) {
@@ -230,6 +313,7 @@ async function setIdleStatus(reason) {
   await setBadge("", "#6b7280");
   await saveState({
     running: false,
+    paused: false,
     reason,
     updatedAt: now,
     queue: [],
@@ -252,6 +336,44 @@ async function loadState() {
 
 async function saveState(state) {
   await chrome.storage.local.set({ [STORAGE_KEY]: state });
+}
+
+async function saveProgressState(state) {
+  const latest = await loadState();
+  if (latest.paused) {
+    state.running = false;
+    state.paused = true;
+    state.pausedAt = latest.pausedAt || new Date().toISOString();
+  }
+  await saveState(state);
+}
+
+async function restoreCollectionState(reason) {
+  const state = await loadState();
+  if (!state.queue?.length) {
+    await setIdleStatus(reason);
+    return;
+  }
+
+  if (state.paused) {
+    await setBadge("PAUSE", "#a16207");
+    return;
+  }
+
+  if (state.running) {
+    state.updatedAt = new Date().toISOString();
+    await saveState(state);
+    await setBadge("RUN", "#2563eb");
+    chrome.alarms.create(ALARM_NAME, { delayInMinutes: 0.1 });
+    return;
+  }
+
+  if (state.finishedAt) {
+    await setBadge("OK", "#15803d");
+    return;
+  }
+
+  await setBadge("", "#6b7280");
 }
 
 async function loadSnapshotCache() {

@@ -6,3 +6,5 @@ export const PAGES_PER_ALARM_TICK = 10;
 export const PAGE_DELAY_MS = 500;
 export const OBSERVATION_DELAY_MS = 30;
 export const WRITE_UNCHANGED_OBSERVATIONS = false;
+export const MAX_PAGE_RETRIES = 3;
+export const RETRY_DELAY_MS = 60000;

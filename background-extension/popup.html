@@ -35,6 +35,12 @@
         opacity: 0.55;
       }
 
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
       dl {
         display: grid;
         grid-template-columns: 1fr auto;
@@ -60,9 +66,13 @@
   </head>
   <body>
     <h1>Joybuy Collector</h1>
-    <button id="start" type="button">Start collection</button>
+    <div class="actions">
+      <button id="start" type="button">Start</button>
+      <button id="pause" type="button" disabled>Pause</button>
+    </div>
     <dl>
       <dt>Status</dt><dd id="status">Loading</dd>
+      <dt>Elapsed</dt><dd id="elapsed">-</dd>
       <dt>Pages</dt><dd id="pages">0</dd>
       <dt>Found</dt><dd id="found">0</dd>
       <dt>Posted</dt><dd id="posted">0</dd>
@@ -70,7 +80,6 @@
       <dt>Failed</dt><dd id="failed">0</dd>
       <dt>Target</dt><dd id="target">-</dd>
       <dt>Page</dt><dd id="page">-</dd>
-      <dt>Targets done</dt><dd id="targets">0</dd>
     </dl>
     <div id="error" class="error" hidden></div>
     <script src="popup.js"></script>

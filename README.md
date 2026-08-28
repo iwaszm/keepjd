@@ -250,6 +250,9 @@ Known behavior:
 - The regular extension never posts observations to `/products/observe`.
 - Listing-page data collection lives in `background-extension/`, which fetches configured target pages, parses Next.js payloads, and posts observations.
 - The background extension stores its latest local product snapshots in Chrome storage. By default it skips unchanged `price + availability` pairs on later runs and only writes new or changed observations.
+- The background extension popup shows running time, current target/page, posted/skipped counts, and supports pause/resume.
+- If Chrome or the machine stops mid-run, the saved queue is reused on the next Chrome startup or extension reload. The current page may be retried; completed pages are not restarted unless a new collection is started.
+- Temporary page fetch failures are retried up to 3 times with a delay before the collector skips that page.
 - Out-of-stock detection comes from JSON-LD `https://schema.org/InStock` and `https://schema.org/OutOfStock` when those fields are present.
 
 ## Optional Ubuntu Playwright Collector
