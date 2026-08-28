@@ -79,6 +79,47 @@ test("extractSearchPageObservations keeps adjacent product prices separated", ()
   ]);
 });
 
+test("extractSearchPageObservations pairs JSON-LD offer prices with adjacent product URLs", () => {
+  const html = `
+    </script><script>(self.__next_s=self.__next_s||[]).push([0,{"children":"
+      {\\"@type\\":\\"ListItem\\",\\"position\\":1,\\"item\\":{
+        \\"@type\\":\\"Product\\",
+        \\"name\\":\\"Frosch Qingning\\",
+        \\"url\\":\\"https://www.joybuy.de/dp/frosch-qingning-750ml/10121869\\",
+        \\"offers\\":{\\"@type\\":\\"Offer\\",\\"price\\":\\"1.75\\",\\"priceCurrency\\":\\"EUR\\",\\"availability\\":\\"https://schema.org/InStock\\"}
+      }},
+      {\\"@type\\":\\"ListItem\\",\\"position\\":2,\\"item\\":{
+        \\"@type\\":\\"Product\\",
+        \\"name\\":\\"Raid trap 5 pack\\",
+        \\"image\\":\\"https://images4.joy-sourcing.com/product/example.png.webp\\",
+        \\"url\\":\\"https://www.joybuy.de/dp/raid-trap-5-pack/10145624\\",
+        \\"offers\\":{\\"@type\\":\\"Offer\\",\\"price\\":\\"3.47\\",\\"priceCurrency\\":\\"EUR\\",\\"availability\\":\\"https://schema.org/OutOfStock\\"}
+      }}
+    "}])</script>
+  `;
+
+  assert.deepEqual(extractSearchPageObservations(html, "2026-08-28"), [
+    {
+      joybuy_product_id: "10121869",
+      title: null,
+      price: 1.75,
+      list_price: null,
+      promo_price: null,
+      availability: "in_stock",
+      captured_at: "2026-08-28"
+    },
+    {
+      joybuy_product_id: "10145624",
+      title: null,
+      price: 3.47,
+      list_price: null,
+      promo_price: null,
+      availability: "out_of_stock",
+      captured_at: "2026-08-28"
+    }
+  ]);
+});
+
 test("extractMaxPageNumber reads pagination links and labels", () => {
   const html = `
     <nav>

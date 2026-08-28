@@ -82,7 +82,7 @@ function collectFromProductUrls(text, found, capturedAt) {
     const price = extractPriceFromProductWindow(windowText, id);
     if (!isPlausibleProductPrice(price)) continue;
 
-    found.set(id, buildObservation(id, price, capturedAt));
+    found.set(id, buildObservation(id, price, capturedAt, extractJsonLdAvailability(windowText)));
   }
 }
 
@@ -99,18 +99,18 @@ function collectFromStructuredIds(text, found, capturedAt) {
     const price = extractPriceFromProductWindow(windowText, id);
     if (!isPlausibleProductPrice(price)) continue;
 
-    found.set(id, buildObservation(id, price, capturedAt));
+    found.set(id, buildObservation(id, price, capturedAt, extractJsonLdAvailability(windowText)));
   }
 }
 
-function buildObservation(id, price, capturedAt) {
+function buildObservation(id, price, capturedAt, availability = "unknown") {
   return {
     joybuy_product_id: id,
     title: null,
     price,
     list_price: null,
     promo_price: null,
-    availability: "unknown",
+    availability,
     captured_at: capturedAt
   };
 }
@@ -166,6 +166,13 @@ function extractSearchEventPrice(text, id) {
   const pattern = new RegExp(`${escapeRegExp(id)},[^"']{0,220}?([0-9]{1,5}(?:\\.[0-9]{2,6}))`, "i");
   const price = parseNumericPrice(text.match(pattern)?.[1]);
   return isPlausibleProductPrice(price) ? price : null;
+}
+
+function extractJsonLdAvailability(text) {
+  const value = String(text || "").match(/"availability"\s*:\s*"https:\/\/schema\.org\/(InStock|OutOfStock)"/i)?.[1];
+  if (/^InStock$/i.test(value || "")) return "in_stock";
+  if (/^OutOfStock$/i.test(value || "")) return "out_of_stock";
+  return "unknown";
 }
 
 function productWindowFromMatches(text, matches, index) {
