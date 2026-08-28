@@ -4,7 +4,8 @@ import {
   OBSERVATION_DELAY_MS,
   PAGE_DELAY_MS,
   PAGES_PER_ALARM_TICK,
-  STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES
+  STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES,
+  WRITE_UNCHANGED_OBSERVATIONS
 } from "./config.js";
 import { TARGET_PAGES } from "./target-pages.js";
 import {
@@ -16,6 +17,7 @@ import {
 
 const ALARM_NAME = "joybuy-background-page-collector";
 const STORAGE_KEY = "joybuyBackgroundCollectorState";
+const SNAPSHOT_CACHE_KEY = "joybuyBackgroundCollectorSnapshots";
 const OBSERVE_URL = `${API_BASE_URL}/products/observe`;
 
 console.info("Joybuy background collector service worker loaded");
@@ -81,6 +83,7 @@ async function startCollection(reason) {
       pagesFetched: 0,
       observationsFound: 0,
       observationsPosted: 0,
+      observationsSkipped: 0,
       observationsFailed: 0,
       targetsDone: 0
     },
@@ -145,24 +148,38 @@ async function collectPage(state, item) {
 
     const observations = extractSearchPageObservations(html);
     const seen = new Set(item.seenProductIds);
+    const snapshotCache = await loadSnapshotCache();
     const freshObservations = observations.filter((observation) => !seen.has(observation.joybuy_product_id));
+    let postedCount = 0;
+    let skippedCount = 0;
 
     for (const observation of freshObservations) {
-      await postObservation(observation);
+      if (shouldPostObservation(observation, snapshotCache)) {
+        await postObservation(observation);
+        postedCount += 1;
+        await sleep(OBSERVATION_DELAY_MS);
+      } else {
+        skippedCount += 1;
+      }
+
+      updateSnapshotCache(snapshotCache, observation);
       seen.add(observation.joybuy_product_id);
-      await sleep(OBSERVATION_DELAY_MS);
     }
+    await saveSnapshotCache(snapshotCache);
 
     item.seenProductIds = [...seen];
     item.emptyOrDuplicatePages = freshObservations.length ? 0 : item.emptyOrDuplicatePages + 1;
     item.lastPageUrl = pageUrl;
     item.lastPageObservationCount = observations.length;
     item.lastPageFreshObservationCount = freshObservations.length;
+    item.lastPagePostedObservationCount = postedCount;
+    item.lastPageSkippedObservationCount = skippedCount;
     item.nextPage += 1;
 
     state.totals.pagesFetched += 1;
     state.totals.observationsFound += observations.length;
-    state.totals.observationsPosted += freshObservations.length;
+    state.totals.observationsPosted += postedCount;
+    state.totals.observationsSkipped = (state.totals.observationsSkipped || 0) + skippedCount;
 
     console.info("Joybuy collector page result", {
       pageUrl,
@@ -172,6 +189,8 @@ async function collectPage(state, item) {
       nextPage: item.nextPage,
       observations: observations.length,
       freshObservations: freshObservations.length,
+      postedObservations: postedCount,
+      skippedObservations: skippedCount,
       totals: state.totals
     });
 
@@ -218,6 +237,7 @@ async function setIdleStatus(reason) {
       pagesFetched: 0,
       observationsFound: 0,
       observationsPosted: 0,
+      observationsSkipped: 0,
       observationsFailed: 0,
       targetsDone: 0
     },
@@ -232,6 +252,32 @@ async function loadState() {
 
 async function saveState(state) {
   await chrome.storage.local.set({ [STORAGE_KEY]: state });
+}
+
+async function loadSnapshotCache() {
+  const data = await chrome.storage.local.get(SNAPSHOT_CACHE_KEY);
+  return data[SNAPSHOT_CACHE_KEY] || {};
+}
+
+async function saveSnapshotCache(cache) {
+  await chrome.storage.local.set({ [SNAPSHOT_CACHE_KEY]: cache });
+}
+
+function shouldPostObservation(observation, cache) {
+  if (WRITE_UNCHANGED_OBSERVATIONS) return true;
+
+  const previous = cache[observation.joybuy_product_id];
+  if (!previous) return true;
+
+  return previous.price !== observation.price || previous.availability !== observation.availability;
+}
+
+function updateSnapshotCache(cache, observation) {
+  cache[observation.joybuy_product_id] = {
+    price: observation.price,
+    availability: observation.availability || "unknown",
+    lastSeenDate: observation.captured_at
+  };
 }
 
 function sleep(ms) {

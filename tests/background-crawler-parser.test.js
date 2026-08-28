@@ -86,7 +86,7 @@ test("extractSearchPageObservations pairs JSON-LD offer prices with adjacent pro
         \\"@type\\":\\"Product\\",
         \\"name\\":\\"Frosch Qingning\\",
         \\"url\\":\\"https://www.joybuy.de/dp/frosch-qingning-750ml/10121869\\",
-        \\"offers\\":{\\"@type\\":\\"Offer\\",\\"price\\":\\"1.75\\",\\"priceCurrency\\":\\"EUR\\",\\"availability\\":\\"https://schema.org/InStock\\"}
+        \\"offers\\":{\\"@type\\":\\"Offer\\",\\"price\\":\\"1.75\\",\\"priceCurrency\\":\\"EUR\\",\\"availability\\":\\"https:\\\\/\\\\/schema.org\\\\/InStock\\"}
       }},
       {\\"@type\\":\\"ListItem\\",\\"position\\":2,\\"item\\":{
         \\"@type\\":\\"Product\\",

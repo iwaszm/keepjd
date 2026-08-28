@@ -21,7 +21,7 @@ This project is currently optimized for low-cost validation, not full-site autom
 - `background-extension/` - Separate Ubuntu-oriented Chrome extension for background listing-page collection.
   - Fetches configured search/listing URLs page by page without opening tabs.
   - Parses `self.__next_s` and `self.__next_f` script payloads for product IDs and prices.
-  - Posts observations to the same Worker API.
+  - Posts changed observations to the same Worker API.
 - `worker/` - Cloudflare Worker API, D1 config, migrations, and cron configuration.
   - `src/index.js` implements the API and persistence rules.
   - `wrangler.toml` contains Worker name, D1 binding, cron trigger, and `TRACKED_PRODUCTS_JSON`.
@@ -249,7 +249,8 @@ Known behavior:
 - Search/category/home pages do not show the chart panel and are not collected by the regular extension.
 - The regular extension never posts observations to `/products/observe`.
 - Listing-page data collection lives in `background-extension/`, which fetches configured target pages, parses Next.js payloads, and posts observations.
-- Out-of-stock detection is not reliable in the minimal data mode. If there is no price, no price point is written. Current stored `availability` values are not reliable enough for product decisions.
+- The background extension stores its latest local product snapshots in Chrome storage. By default it skips unchanged `price + availability` pairs on later runs and only writes new or changed observations.
+- Out-of-stock detection comes from JSON-LD `https://schema.org/InStock` and `https://schema.org/OutOfStock` when those fields are present.
 
 ## Optional Ubuntu Playwright Collector
 

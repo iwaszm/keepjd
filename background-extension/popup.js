@@ -3,6 +3,7 @@ const statusNode = document.getElementById("status");
 const pagesNode = document.getElementById("pages");
 const foundNode = document.getElementById("found");
 const postedNode = document.getElementById("posted");
+const skippedNode = document.getElementById("skipped");
 const failedNode = document.getElementById("failed");
 const targetNode = document.getElementById("target");
 const pageNode = document.getElementById("page");
@@ -34,6 +35,7 @@ async function refreshState() {
   pagesNode.textContent = totals.pagesFetched || 0;
   foundNode.textContent = totals.observationsFound || 0;
   postedNode.textContent = totals.observationsPosted || 0;
+  skippedNode.textContent = totals.observationsSkipped || 0;
   failedNode.textContent = totals.observationsFailed || 0;
   targetNode.textContent = activeTarget ? `${activeTarget.targetIndex}/${state.queue.length}` : "-";
   pageNode.textContent = activeTarget ? `${activeTarget.nextPage}/${activeTarget.detectedMaxPage || activeTarget.maxPage}` : "-";

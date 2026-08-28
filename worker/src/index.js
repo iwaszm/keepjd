@@ -152,10 +152,13 @@ async function maybeInsertPricePoint(db, productId, snapshot) {
     await db
       .prepare(
         `UPDATE price_points
-         SET price = ?, list_price = NULL, promo_price = NULL, availability = 'unknown'
+         SET price = ?,
+             list_price = NULL,
+             promo_price = NULL,
+             availability = CASE WHEN ? = 'unknown' THEN availability ELSE ? END
          WHERE id = ?`
       )
-      .bind(snapshot.price, existing.id)
+      .bind(snapshot.price, normalizeAvailability(snapshot.availability), normalizeAvailability(snapshot.availability), existing.id)
       .run();
     return true;
   }
@@ -163,9 +166,9 @@ async function maybeInsertPricePoint(db, productId, snapshot) {
   await db
     .prepare(
       `INSERT INTO price_points (product_id, price, list_price, promo_price, availability, captured_at)
-       VALUES (?, ?, NULL, NULL, 'unknown', ?)`
+       VALUES (?, ?, NULL, NULL, ?, ?)`
     )
-    .bind(productId, snapshot.price, captureDate)
+    .bind(productId, snapshot.price, normalizeAvailability(snapshot.availability), captureDate)
     .run();
   return true;
 }
@@ -183,7 +186,15 @@ function validateObservation(payload) {
   if (!payload || typeof payload !== "object") return "Body must be an object";
   if (!payload.joybuy_product_id || typeof payload.joybuy_product_id !== "string") return "joybuy_product_id is required";
   if (typeof payload.price !== "number" || !Number.isFinite(payload.price)) return "price must be a finite number";
+  if (payload.availability !== undefined && normalizeAvailability(payload.availability) !== payload.availability) {
+    return "availability must be in_stock, out_of_stock, or unknown";
+  }
   return null;
+}
+
+function normalizeAvailability(value) {
+  if (value === "in_stock" || value === "out_of_stock") return value;
+  return "unknown";
 }
 
 function json(body, status = 200) {

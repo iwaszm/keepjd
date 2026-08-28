@@ -25,6 +25,7 @@ test("POST /products/observe overwrites same-day price with the latest observati
     body: JSON.stringify({
       joybuy_product_id: "10387040",
       price: 3.99,
+      availability: "in_stock",
       captured_at: "2026-08-27"
     })
   }), { DB: db });
@@ -47,19 +48,32 @@ test("POST /products/observe overwrites same-day price with the latest observati
     body: JSON.stringify({
       joybuy_product_id: "10387040",
       price: 3.49,
+      availability: "out_of_stock",
       captured_at: "2026-08-27"
     })
   }), { DB: db });
   assert.equal(higher.status, 200);
   assert.equal((await higher.json()).inserted, true);
 
+  const unknownAvailability = await handleRequest(new Request("https://api.example.test/products/observe", {
+    method: "POST",
+    body: JSON.stringify({
+      joybuy_product_id: "10387040",
+      price: 3.59,
+      availability: "unknown",
+      captured_at: "2026-08-27"
+    })
+  }), { DB: db });
+  assert.equal(unknownAvailability.status, 200);
+  assert.equal((await unknownAvailability.json()).inserted, true);
+
   const history = await handleRequest(new Request("https://api.example.test/products/10387040/prices?range=30d"), { DB: db });
   const body = await history.json();
   assert.deepEqual(body.prices, [{
-    price: 3.49,
+    price: 3.59,
     list_price: null,
     promo_price: null,
-    availability: "unknown",
+    availability: "out_of_stock",
     captured_at: "2026-08-27"
   }]);
 });
@@ -144,26 +158,26 @@ class FakeStatement {
     }
 
     if (/INSERT INTO price_points/i.test(this.sql)) {
-      const [productId, price, capturedAt] = this.values;
+      const [productId, price, availability, capturedAt] = this.values;
       this.db.pricePoints.push({
         id: this.db.nextPricePointId++,
         product_id: productId,
         price,
         list_price: null,
         promo_price: null,
-        availability: "unknown",
+        availability,
         captured_at: capturedAt
       });
       return {};
     }
 
     if (/UPDATE price_points/i.test(this.sql)) {
-      const [price, id] = this.values;
+      const [price, availability, _availabilityForCase, id] = this.values;
       const point = this.db.pricePoints.find((item) => item.id === id);
       point.price = price;
       point.list_price = null;
       point.promo_price = null;
-      point.availability = "unknown";
+      if (availability !== "unknown") point.availability = availability;
       return {};
     }
 

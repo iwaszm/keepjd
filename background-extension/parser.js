@@ -169,7 +169,9 @@ function extractSearchEventPrice(text, id) {
 }
 
 function extractJsonLdAvailability(text) {
-  const value = String(text || "").match(/"availability"\s*:\s*"https:\/\/schema\.org\/(InStock|OutOfStock)"/i)?.[1];
+  const value = String(text || "")
+    .replace(/\\\//g, "/")
+    .match(/"availability"\s*:\s*"https:\/\/schema\.org\/(InStock|OutOfStock)"/i)?.[1];
   if (/^InStock$/i.test(value || "")) return "in_stock";
   if (/^OutOfStock$/i.test(value || "")) return "out_of_stock";
   return "unknown";
@@ -214,6 +216,7 @@ function normalizeScriptText(text) {
   return String(text || "")
     .replace(/&quot;/g, "\"")
     .replace(/&amp;/g, "&")
+    .replace(/\\\//g, "/")
     .replace(/\\u002F/gi, "/")
     .replace(/\\u003C/gi, "<")
     .replace(/\\u003E/gi, ">")
