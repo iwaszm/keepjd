@@ -96,7 +96,7 @@ async function startCollection(reason) {
     nextPage: pageNumberFromSeed(targetUrl),
     maxPage: pageNumberFromSeed(targetUrl) + MAX_PAGES_PER_TARGET - 1,
     seenProductIds: [],
-    emptyOrDuplicatePages: 0,
+    emptyPages: 0,
     done: false
   }));
 
@@ -239,7 +239,7 @@ async function collectPage(state, item) {
     await saveSnapshotCache(snapshotCache);
 
     item.seenProductIds = [...seen];
-    item.emptyOrDuplicatePages = freshObservations.length ? 0 : item.emptyOrDuplicatePages + 1;
+    item.emptyPages = observations.length ? 0 : (item.emptyPages || 0) + 1;
     item.lastPageUrl = pageUrl;
     item.lastPageObservationCount = observations.length;
     item.lastPageFreshObservationCount = freshObservations.length;
@@ -267,7 +267,7 @@ async function collectPage(state, item) {
       totals: state.totals
     });
 
-    if (!item.maxPageDetected && item.emptyOrDuplicatePages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
+    if (!item.maxPageDetected && item.emptyPages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
       markTargetDone(state, item);
     } else if (item.nextPage > item.maxPage) {
       markTargetDone(state, item);
@@ -331,7 +331,7 @@ async function setIdleStatus(reason) {
 
 async function loadState() {
   const data = await chrome.storage.local.get(STORAGE_KEY);
-  return data[STORAGE_KEY] || { running: false };
+  return normalizeState(data[STORAGE_KEY] || { running: false });
 }
 
 async function saveState(state) {
@@ -400,6 +400,16 @@ function updateSnapshotCache(cache, observation) {
     availability: observation.availability || "unknown",
     lastSeenDate: observation.captured_at
   };
+}
+
+function normalizeState(state) {
+  if (!Array.isArray(state.queue)) return state;
+
+  state.queue = state.queue.map((item) => ({
+    ...item,
+    emptyPages: item.emptyPages ?? item.emptyOrDuplicatePages ?? 0
+  }));
+  return state;
 }
 
 function sleep(ms) {
