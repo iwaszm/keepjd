@@ -103,7 +103,7 @@ async function observeProductsBatch(request, db) {
 
   const observations = Array.isArray(payload) ? payload : payload?.observations;
   if (!Array.isArray(observations)) return json({ error: "observations must be an array" }, 400);
-  if (observations.length > 100) return json({ error: "observations must contain at most 100 items" }, 400);
+  if (observations.length > 500) return json({ error: "observations must contain at most 500 items" }, 400);
 
   const results = [];
   for (const observation of observations) {

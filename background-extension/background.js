@@ -1,5 +1,6 @@
 import {
   API_BASE_URL,
+  BATCH_FLUSH_SIZE,
   MAX_PAGES_PER_TARGET,
   MAX_PAGE_RETRIES,
   OBSERVATION_DELAY_MS,
@@ -20,6 +21,7 @@ import {
 const ALARM_NAME = "joybuy-background-page-collector";
 const STORAGE_KEY = "joybuyBackgroundCollectorState";
 const SNAPSHOT_CACHE_KEY = "joybuyBackgroundCollectorSnapshots";
+const PENDING_OBSERVATIONS_KEY = "joybuyBackgroundCollectorPendingObservations";
 const OBSERVE_URL = `${API_BASE_URL}/products/observe`;
 const OBSERVE_BATCH_URL = `${API_BASE_URL}/products/observe-batch`;
 
@@ -55,7 +57,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "GET_STATE") {
-    loadState().then((state) => sendResponse({ ok: true, state })).catch((error) => {
+    loadStateWithPendingCount().then((state) => sendResponse({ ok: true, state })).catch((error) => {
       sendResponse({ ok: false, error: error.message });
     });
     return true;
@@ -90,6 +92,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 async function startCollection(reason) {
   console.info("Joybuy background collection starting", { reason, targets: TARGET_PAGES.length });
   await chrome.alarms.clear(ALARM_NAME);
+  const pending = await loadPendingObservations();
   await setBadge("RUN", "#2563eb");
   const startedAt = new Date().toISOString();
   const queue = TARGET_PAGES.map((target, index) => {
@@ -122,6 +125,7 @@ async function startCollection(reason) {
       pagesFetched: 0,
       observationsFound: 0,
       observationsPosted: 0,
+      observationsBuffered: pending.length,
       observationsSkipped: 0,
       observationsFailed: 0,
       targetsDone: 0
@@ -141,6 +145,7 @@ async function processQueue() {
   while (pagesLeft > 0) {
     const item = state.queue.find((entry) => !entry.done);
     if (!item) {
+      await flushPendingObservations(state);
       state.running = false;
       state.finishedAt = new Date().toISOString();
       state.updatedAt = state.finishedAt;
@@ -176,6 +181,7 @@ async function pauseCollection() {
   const state = await loadState();
   if (!state.running) return;
 
+  await flushPendingObservations(state);
   state.running = false;
   state.paused = true;
   state.pausedAt = new Date().toISOString();
@@ -236,6 +242,7 @@ async function collectPage(state, item) {
     const snapshotCache = await loadSnapshotCache();
     const freshObservations = observations.filter((observation) => !seen.has(observation.joybuy_product_id));
     const observationsToPost = [];
+    let queuedCount = 0;
     let postedCount = 0;
     let skippedCount = 0;
 
@@ -251,7 +258,11 @@ async function collectPage(state, item) {
     }
 
     if (observationsToPost.length) {
-      postedCount = await postObservations(observationsToPost);
+      queuedCount = await queuePendingObservations(observationsToPost);
+      state.totals.observationsBuffered = queuedCount;
+      if (queuedCount >= BATCH_FLUSH_SIZE) {
+        postedCount = await flushPendingObservations(state);
+      }
       if (OBSERVATION_DELAY_MS > 0) await sleep(OBSERVATION_DELAY_MS);
     }
 
@@ -263,6 +274,7 @@ async function collectPage(state, item) {
     item.lastPageObservationCount = observations.length;
     item.lastPageFreshObservationCount = freshObservations.length;
     item.lastPagePostedObservationCount = postedCount;
+    item.lastPageQueuedObservationCount = observationsToPost.length;
     item.lastPageSkippedObservationCount = skippedCount;
     item.retryCount = 0;
     item.retryAfter = null;
@@ -275,7 +287,6 @@ async function collectPage(state, item) {
 
     state.totals.pagesFetched += 1;
     state.totals.observationsFound += observations.length;
-    state.totals.observationsPosted += postedCount;
     state.totals.observationsSkipped = (state.totals.observationsSkipped || 0) + skippedCount;
 
     console.info("Joybuy collector page result", {
@@ -286,14 +297,18 @@ async function collectPage(state, item) {
       nextPage: item.nextPage,
       observations: observations.length,
       freshObservations: freshObservations.length,
+      queuedObservations: observationsToPost.length,
+      bufferedObservations: state.totals.observationsBuffered || 0,
       postedObservations: postedCount,
       skippedObservations: skippedCount,
       totals: state.totals
     });
 
     if (!item.maxPageDetected && item.emptyPages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
+      await flushPendingObservations(state);
       markTargetDone(state, item, "empty_page_stop");
     } else if (item.nextPage > item.maxPage) {
+      await flushPendingObservations(state);
       markTargetDone(state, item, "max_page_reached");
     }
   } catch (error) {
@@ -318,6 +333,14 @@ async function collectPage(state, item) {
 }
 
 async function postObservations(observations) {
+  let postedCount = 0;
+  for (let index = 0; index < observations.length; index += BATCH_FLUSH_SIZE) {
+    postedCount += await postObservationChunk(observations.slice(index, index + BATCH_FLUSH_SIZE));
+  }
+  return postedCount;
+}
+
+async function postObservationChunk(observations) {
   const response = await fetch(OBSERVE_BATCH_URL, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -367,6 +390,7 @@ async function setIdleStatus(reason) {
       pagesFetched: 0,
       observationsFound: 0,
       observationsPosted: 0,
+      observationsBuffered: 0,
       observationsSkipped: 0,
       observationsFailed: 0,
       targetsDone: 0
@@ -380,8 +404,52 @@ async function loadState() {
   return normalizeState(data[STORAGE_KEY] || { running: false });
 }
 
+async function loadStateWithPendingCount() {
+  const state = await loadState();
+  const pending = await loadPendingObservations();
+  state.totals = state.totals || {};
+  state.totals.observationsBuffered = pending.length;
+  return state;
+}
+
 async function saveState(state) {
   await chrome.storage.local.set({ [STORAGE_KEY]: state });
+}
+
+async function queuePendingObservations(observations) {
+  const pending = await loadPendingObservations();
+  const byProductId = new Map(pending.map((observation) => [observation.joybuy_product_id, observation]));
+  for (const observation of observations) {
+    byProductId.set(observation.joybuy_product_id, observation);
+  }
+  const nextPending = [...byProductId.values()];
+  await savePendingObservations(nextPending);
+  return nextPending.length;
+}
+
+async function flushPendingObservations(state = null) {
+  const pending = await loadPendingObservations();
+  if (!pending.length) {
+    if (state) state.totals.observationsBuffered = 0;
+    return 0;
+  }
+
+  const postedCount = await postObservations(pending);
+  await savePendingObservations([]);
+  if (state) {
+    state.totals.observationsPosted = (state.totals.observationsPosted || 0) + postedCount;
+    state.totals.observationsBuffered = 0;
+  }
+  return postedCount;
+}
+
+async function loadPendingObservations() {
+  const data = await chrome.storage.local.get(PENDING_OBSERVATIONS_KEY);
+  return Array.isArray(data[PENDING_OBSERVATIONS_KEY]) ? data[PENDING_OBSERVATIONS_KEY] : [];
+}
+
+async function savePendingObservations(observations) {
+  await chrome.storage.local.set({ [PENDING_OBSERVATIONS_KEY]: observations });
 }
 
 async function saveProgressState(state) {
