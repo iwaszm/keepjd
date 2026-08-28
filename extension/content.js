@@ -1,12 +1,15 @@
 const API_BASE_URL = "https://joybuy-price-history.zhangmeng43.workers.dev";
 const ROOT_ID = "joybuy-price-history-tracker-root";
 const RANGES = ["30d", "90d"];
+const RANGE_DAYS = {
+  "30d": 30,
+  "90d": 90
+};
 const MAX_BOOT_ATTEMPTS = 20;
 const state = {
   activeRange: "30d",
   href: "",
   lastProductId: "",
-  lastPrice: null,
   syncTimer: 0,
   rangeMins: Object.fromEntries(RANGES.map((range) => [range, null]))
 };
@@ -36,12 +39,10 @@ function isProductPageCandidate() {
 
 function extractSnapshotFromPage() {
   const joybuyProductId = extractProductId(location.href, document.documentElement.innerHTML);
-  const price = extractVisiblePrice();
   if (!joybuyProductId) return null;
 
   return {
-    joybuy_product_id: joybuyProductId,
-    price
+    joybuy_product_id: joybuyProductId
   };
 }
 
@@ -59,8 +60,8 @@ function injectPanel(snapshot) {
     <div class="jbph-shell">
       <div class="jbph-top">
         <div class="jbph-now">
-          <span>Now</span>
-          <strong data-current-price>${snapshot.price === null ? "--" : formatEuro(snapshot.price)}</strong>
+          <span>Latest</span>
+          <strong data-latest-price>--</strong>
         </div>
         <div class="jbph-toolbar" role="tablist" aria-label="Price history range">
           ${RANGES.map((range) => renderRangeButton(range)).join("")}
@@ -93,12 +94,10 @@ function syncPanel() {
 
   const root = injectPanel(snapshot);
   const productChanged = snapshot.joybuy_product_id !== state.lastProductId;
-  const priceChanged = snapshot.price !== state.lastPrice;
   const hrefChanged = location.href !== state.href;
 
   state.href = location.href;
   state.lastProductId = snapshot.joybuy_product_id;
-  state.lastPrice = snapshot.price;
 
   updatePanelMeta(root, snapshot);
 
@@ -135,7 +134,7 @@ async function loadRangeMinimums(root, joybuyProductId) {
       const response = await fetch(`${API_BASE_URL}/products/${encodeURIComponent(joybuyProductId)}/prices?range=${range}`);
       if (!response.ok) return;
       const data = await response.json();
-      state.rangeMins[range] = minimumPrice(data.prices || []);
+      state.rangeMins[range] = minimumPrice(expandDailyPricePoints(data.prices || [], range));
       updateRangeButtons(root);
     } catch {}
   }));
@@ -146,9 +145,6 @@ function minimumPrice(points) {
   return prices.length ? Math.min(...prices) : null;
 }
 function updatePanelMeta(root, snapshot) {
-  const priceNode = root.querySelector("[data-current-price]");
-  if (priceNode) priceNode.textContent = snapshot.price === null ? "--" : formatEuro(snapshot.price);
-
   updateRangeButtons(root);
 }
 
@@ -189,47 +185,117 @@ async function loadAndRender(root, joybuyProductId, range) {
     const response = await fetch(`${API_BASE_URL}/products/${encodeURIComponent(joybuyProductId)}/prices?range=${range}`);
     if (!response.ok) throw new Error(`API returned ${response.status}`);
     const data = await response.json();
-    const prices = data.prices || [];
+    const prices = expandDailyPricePoints(data.prices || [], range);
     state.rangeMins[range] = minimumPrice(prices);
     updateRangeButtons(root);
+    updateLatestHistoryPrice(root, prices);
     renderChart(root.querySelector("[data-chart]"), prices);
     setStatus(root, prices.length ? "" : "No data");
   } catch {
+    updateLatestHistoryPrice(root, []);
     renderChart(root.querySelector("[data-chart]"), []);
     setStatus(root, "Unavailable");
   }
 }
 
+function updateLatestHistoryPrice(root, points) {
+  const priceNode = root.querySelector("[data-latest-price]");
+  if (!priceNode) return;
+
+  const latestPoint = [...points].reverse().find((point) => Number.isFinite(Number(point.price)));
+  priceNode.textContent = latestPoint ? formatEuro(latestPoint.price) : "--";
+}
+
+function expandDailyPricePoints(points, range) {
+  const validPoints = points
+    .filter((point) => Number.isFinite(Number(point.price)) && parseDateOnly(point.captured_at))
+    .sort((a, b) => String(a.captured_at).localeCompare(String(b.captured_at)));
+  if (!validPoints.length) return [];
+
+  const today = dateOnly(new Date());
+  const since = addDays(today, -(RANGE_DAYS[range] ?? RANGE_DAYS["30d"]));
+  let activePointIndex = 0;
+  let activePoint = null;
+  const expanded = [];
+
+  for (let cursor = since; cursor <= today; cursor = addDays(cursor, 1)) {
+    while (
+      activePointIndex < validPoints.length
+      && String(validPoints[activePointIndex].captured_at).slice(0, 10) <= cursor
+    ) {
+      activePoint = validPoints[activePointIndex];
+      activePointIndex += 1;
+    }
+
+    if (activePoint) {
+      expanded.push({
+        ...activePoint,
+        price: Number(activePoint.price),
+        captured_at: cursor,
+        carried_forward: String(activePoint.captured_at).slice(0, 10) !== cursor
+      });
+    }
+  }
+
+  return expanded;
+}
+
 function renderChart(container, points) {
-  if (!points.length) {
-    container.innerHTML = `<div class="jbph-empty">No captured prices</div>`;
+  const validPoints = points.filter((point) => Number.isFinite(Number(point.price)));
+  if (!validPoints.length) {
+    container.innerHTML = `<div class="jbph-empty">No tracked history yet.</div>`;
     return;
   }
 
   const width = 640;
   const height = 170;
   const pad = { top: 16, right: 18, bottom: 34, left: 36 };
-  const prices = points.map((point) => Number(point.price)).filter(Number.isFinite);
+  const prices = validPoints.map((point) => Number(point.price));
   const min = Math.min(...prices);
   const max = Math.max(...prices);
   const span = Math.max(max - min, 1);
-  const coords = points.map((point, index) => {
-    const x = pad.left + (index / Math.max(points.length - 1, 1)) * (width - pad.left - pad.right);
+  const coords = validPoints.map((point, index) => {
+    const x = pad.left + (index / Math.max(validPoints.length - 1, 1)) * (width - pad.left - pad.right);
     const y = pad.top + ((max - Number(point.price)) / span) * (height - pad.top - pad.bottom);
     return { x, y, point };
   });
-  const line = coords.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const segments = getStepSegments(coords, pad, width);
   const xLabels = getXAxisLabels(coords);
 
   container.innerHTML = `
     <svg class="jbph-svg" viewBox="0 0 ${width} ${height}" role="img">
       <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}" />
       <line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" />
-      <polyline points="${line}" />
-      ${coords.map(({ x, y, point }) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3"><title>${new Date(point.captured_at).toLocaleDateString()} - ${formatEuro(point.price)}</title></circle>`).join("")}
+      ${segments.map(({ d, outOfStock }) => `<path class="jbph-step-line${outOfStock ? " is-out-of-stock" : ""}" d="${d}" />`).join("")}
+      ${coords.map(({ x, y, point }) => `<circle class="${isOutOfStock(point) ? "is-out-of-stock" : ""}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3"><title>${new Date(point.captured_at).toLocaleDateString()} - ${formatEuro(point.price)}${isOutOfStock(point) ? " - out of stock" : ""}</title></circle>`).join("")}
       ${xLabels.map(({ x, label }) => `<text class="jbph-x-label" x="${x.toFixed(1)}" y="${height - 12}" text-anchor="middle">${label}</text>`).join("")}
     </svg>
   `;
+}
+
+function getStepSegments(coords, pad, width) {
+  if (coords.length === 1) {
+    const y = coords[0].y.toFixed(1);
+    return [{
+      d: `M ${pad.left} ${y} H ${width - pad.right}`,
+      outOfStock: isOutOfStock(coords[0].point)
+    }];
+  }
+
+  const segments = [];
+  for (let index = 1; index < coords.length; index += 1) {
+    const previous = coords[index - 1];
+    const current = coords[index];
+    segments.push({
+      d: `M ${previous.x.toFixed(1)} ${previous.y.toFixed(1)} H ${current.x.toFixed(1)} V ${current.y.toFixed(1)}`,
+      outOfStock: isOutOfStock(previous.point) || isOutOfStock(current.point)
+    });
+  }
+  return segments;
+}
+
+function isOutOfStock(point) {
+  return point?.availability === "out_of_stock";
 }
 
 function getXAxisLabels(coords) {
@@ -272,56 +338,33 @@ function extractProductId(rawUrl, html) {
   return null;
 }
 
-function extractVisiblePrice() {
-  const primaryPrice = findPriceInSelectors([
-    "[class*='skuPriceReal' i]",
-    "[class*='mainPriceText_wrapper' i]",
-    "[class*='mainPrice__' i]"
-  ]);
-  if (primaryPrice !== null) return primaryPrice;
-
-  return findPriceInSelectors([
-    "[class*='price' i]",
-    "[class*='amount' i]",
-    "[data-testid*='price' i]",
-    "[data-price]",
-    "meta[property='product:price:amount']"
-  ]) ?? extractFirstEuroPrice(document.body.innerText);
-}
-
-function findPriceInSelectors(selectors) {
-  const priceNodes = [...document.querySelectorAll(selectors.join(", "))];
-  for (const node of priceNodes) {
-    if (node.closest(`#${ROOT_ID}`)) continue;
-    const value = node.content || node.dataset?.price || node.textContent;
-    const price = extractFirstEuroPrice(value);
-    if (isPlausibleProductPrice(price)) return price;
-  }
-  return null;
-}
-
-function isPlausibleProductPrice(price) {
-  return typeof price === "number" && Number.isFinite(price) && price >= 0.1 && price <= 10000;
-}
-
-function extractFirstEuroPrice(value) {
-  const text = String(value || "").replace(/\u00a0/g, " ");
-  const match = text.match(/€\s*(\d{1,3}(?:[.\s]\d{3})*|\d+)([,.])(\d{2})(?!\d)|(\d{1,3}(?:[.\s]\d{3})*|\d+)([,.])(\d{2})(?!\d)\s*€/);
-  if (!match) return null;
-  const integerPart = match[1] || match[4];
-  const decimal = match[3] || match[6];
-  const price = Number(`${integerPart.replace(/[.\s]/g, "")}.${decimal}`);
-  return Number.isFinite(price) ? price : null;
-}
-
 function formatEuro(value) {
   return new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" }).format(Number(value));
 }
 
 function formatDateMMDD(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
+  const date = parseDateOnly(value);
+  if (!date) return "";
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
   return `${month}-${day}`;
+}
+
+function parseDateOnly(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return null;
+
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function dateOnly(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function addDays(dateText, days) {
+  const date = parseDateOnly(dateText);
+  if (!date) return "";
+  date.setUTCDate(date.getUTCDate() + days);
+  return dateOnly(date);
 }

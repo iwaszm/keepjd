@@ -55,10 +55,18 @@ async function getPrices(db, joybuyProductId, range) {
     .prepare(
       `SELECT price, list_price, promo_price, availability, captured_at
        FROM price_points
-       WHERE product_id = ? AND captured_at >= ?
+       WHERE product_id = ?
+         AND (
+           captured_at >= ?
+           OR captured_at = (
+             SELECT MAX(captured_at)
+             FROM price_points
+             WHERE product_id = ? AND captured_at < ?
+           )
+         )
        ORDER BY captured_at ASC`
     )
-    .bind(product.id, since)
+    .bind(product.id, since, product.id, since)
     .all();
 
   return json({ product, prices: results ?? [], range, currency: "EUR" });

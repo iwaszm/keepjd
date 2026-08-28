@@ -115,7 +115,7 @@
   stroke-width: 1;
 }
 
-#joybuy-price-history-tracker-root .jbph-svg polyline {
+#joybuy-price-history-tracker-root .jbph-svg .jbph-step-line {
   fill: none;
   stroke: #0f6b57;
   stroke-linecap: round;
@@ -123,10 +123,18 @@
   stroke-width: 3;
 }
 
+#joybuy-price-history-tracker-root .jbph-svg .jbph-step-line.is-out-of-stock {
+  stroke: #9a9a9a;
+}
+
 #joybuy-price-history-tracker-root .jbph-svg circle {
   fill: #f2a541;
   stroke: #fffdf8;
   stroke-width: 2;
+}
+
+#joybuy-price-history-tracker-root .jbph-svg circle.is-out-of-stock {
+  fill: #9a9a9a;
 }
 
 #joybuy-price-history-tracker-root .jbph-svg text {

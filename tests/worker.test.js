@@ -78,6 +78,38 @@ test("POST /products/observe overwrites same-day price with the latest observati
   }]);
 });
 
+test("GET /products/:id/prices includes the latest point before the requested range", async () => {
+  const db = new FakeD1();
+  db.products.push({
+    id: 1,
+    joybuy_product_id: "10387040",
+    url: "https://www.joybuy.de/dp/10387040",
+    title: null,
+    created_at: "2026-01-01",
+    updated_at: "2026-01-01"
+  });
+  db.pricePoints.push({
+    id: 1,
+    product_id: 1,
+    price: 4.99,
+    list_price: null,
+    promo_price: null,
+    availability: "in_stock",
+    captured_at: "2000-01-01"
+  });
+
+  const response = await handleRequest(new Request("https://api.example.test/products/10387040/prices?range=30d"), { DB: db });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body.prices, [{
+    price: 4.99,
+    list_price: null,
+    promo_price: null,
+    availability: "in_stock",
+    captured_at: "2000-01-01"
+  }]);
+});
+
 class FakeD1 {
   constructor() {
     this.products = [];
@@ -117,10 +149,14 @@ class FakeStatement {
   }
 
   async all() {
-    if (/FROM price_points\s+WHERE product_id = \? AND captured_at >= \?/i.test(this.sql)) {
+    if (/FROM price_points\s+WHERE product_id = \?/i.test(this.sql)) {
       const [productId, since] = this.values;
+      const carryIn = this.db.pricePoints
+        .filter((point) => point.product_id === productId && point.captured_at < since)
+        .sort((a, b) => b.captured_at.localeCompare(a.captured_at))[0];
       const results = this.db.pricePoints
         .filter((point) => point.product_id === productId && point.captured_at >= since)
+        .concat(carryIn ? [carryIn] : [])
         .sort((a, b) => a.captured_at.localeCompare(b.captured_at))
         .map(({ price, list_price, promo_price, availability, captured_at }) => ({
           price,
