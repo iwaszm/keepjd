@@ -7,6 +7,9 @@ import {
   PAGE_DELAY_MS,
   PAGES_PER_ALARM_TICK,
   RETRY_DELAY_MS,
+  STREAM_EARLY_ABORT_ENABLED,
+  STREAM_FULL_READ_FALLBACK_BYTES,
+  STREAM_MIN_BYTES,
   STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES,
   WRITE_UNCHANGED_OBSERVATIONS
 } from "./config.js";
@@ -221,13 +224,8 @@ async function collectPage(state, item) {
   console.info("Joybuy collector fetching page", pageUrl);
 
   try {
-    const response = await fetch(pageUrl, {
-      credentials: "include",
-      cache: "no-store"
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-    const html = await response.text();
+    const page = await fetchSearchPageHtml(pageUrl, Boolean(item.configuredMaxPage));
+    const html = page.html;
     const detectedMaxPage = extractMaxPageNumber(html);
     if (detectedMaxPage !== null) {
       item.detectedMaxPage = detectedMaxPage;
@@ -271,6 +269,8 @@ async function collectPage(state, item) {
     item.seenProductIds = [...seen];
     item.emptyPages = observations.length ? 0 : (item.emptyPages || 0) + 1;
     item.lastPageUrl = pageUrl;
+    item.lastPagePartialRead = page.partialRead;
+    item.lastPageBytesRead = page.bytesRead;
     item.lastPageObservationCount = observations.length;
     item.lastPageFreshObservationCount = freshObservations.length;
     item.lastPagePostedObservationCount = postedCount;
@@ -291,6 +291,8 @@ async function collectPage(state, item) {
 
     console.info("Joybuy collector page result", {
       pageUrl,
+      partialRead: page.partialRead,
+      bytesRead: page.bytesRead,
       targetIndex: item.targetIndex,
       detectedMaxPage,
       maxPage: item.maxPage,
@@ -330,6 +332,60 @@ async function collectPage(state, item) {
   }
 
   return true;
+}
+
+async function fetchSearchPageHtml(pageUrl, allowEarlyAbort) {
+  const response = await fetch(pageUrl, {
+    credentials: "include",
+    cache: "no-store"
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+  if (!allowEarlyAbort || !STREAM_EARLY_ABORT_ENABLED || !response.body) {
+    const html = await response.text();
+    return { html, partialRead: false, bytesRead: html.length };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let html = "";
+  let bytesRead = 0;
+  let earlyAbortAvailable = true;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    bytesRead += value.byteLength;
+    html += decoder.decode(value, { stream: true });
+
+    if (earlyAbortAvailable && bytesRead >= STREAM_MIN_BYTES && hasCompleteProductNextScript(html)) {
+      await reader.cancel();
+      html += decoder.decode();
+      return { html, partialRead: true, bytesRead };
+    }
+
+    if (earlyAbortAvailable && bytesRead >= STREAM_FULL_READ_FALLBACK_BYTES && !hasProductNextScriptStart(html)) {
+      earlyAbortAvailable = false;
+    }
+  }
+
+  html += decoder.decode();
+  return { html, partialRead: false, bytesRead };
+}
+
+function hasProductNextScriptStart(html) {
+  return /<script\b[^>]*>[\s\S]*self\.__next_[sf][\s\S]*\/dp\//i.test(html);
+}
+
+function hasCompleteProductNextScript(html) {
+  const pattern = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = pattern.exec(html))) {
+    const text = match[1] || "";
+    if (/self\.__next_[sf]/i.test(text) && /\/dp\//i.test(text) && /"offers"\s*:/i.test(text)) return true;
+  }
+  return false;
 }
 
 async function postObservations(observations) {
