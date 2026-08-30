@@ -58,15 +58,33 @@ export function extractMaxPageNumber(html) {
 
 function extractNextScripts(html) {
   const scripts = [];
+  const text = String(html || "");
   const pattern = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
   let match;
-  while ((match = pattern.exec(html))) {
-    const text = match[1] || "";
-    if (/self\.__next_[sf]|\/dp\/|skuId|productId|wareId|price/i.test(text)) {
-      scripts.push(text);
+  while ((match = pattern.exec(text))) {
+    const scriptText = match[1] || "";
+    if (isCandidateProductScript(scriptText)) {
+      scripts.push(scriptText);
     }
   }
+
+  const lastScriptStart = text.lastIndexOf("<script");
+  const lastScriptEnd = text.lastIndexOf("</script>");
+  if (lastScriptStart > lastScriptEnd) {
+    const scriptBodyStart = text.indexOf(">", lastScriptStart);
+    if (scriptBodyStart !== -1) {
+      const partialScriptText = text.slice(scriptBodyStart + 1);
+      if (isCandidateProductScript(partialScriptText)) {
+        scripts.push(partialScriptText);
+      }
+    }
+  }
+
   return scripts;
+}
+
+function isCandidateProductScript(text) {
+  return /self\.__next_[sf]|\/dp\/|skuId|productId|wareId|price/i.test(text);
 }
 
 function collectFromProductUrls(text, found, capturedAt) {

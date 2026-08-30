@@ -120,6 +120,28 @@ test("extractSearchPageObservations pairs JSON-LD offer prices with adjacent pro
   ]);
 });
 
+test("extractSearchPageObservations reads product data from an incomplete streamed Next script", () => {
+  const html = `
+    <script>(self.__next_s=self.__next_s||[]).push([0,{"children":"
+      {\\"@type\\":\\"ListItem\\",\\"position\\":1,\\"item\\":{
+        \\"@type\\":\\"Product\\",
+        \\"url\\":\\"https://www.joybuy.de/dp/robot-vacuum/10328909\\",
+        \\"offers\\":{\\"@type\\":\\"Offer\\",\\"price\\":\\"229.00\\",\\"priceCurrency\\":\\"EUR\\",\\"availability\\":\\"https://schema.org/InStock\\"}
+      }}
+    "}]
+  `;
+
+  assert.deepEqual(extractSearchPageObservations(html, "2026-08-30"), [{
+    joybuy_product_id: "10328909",
+    title: null,
+    price: 229,
+    list_price: null,
+    promo_price: null,
+    availability: "in_stock",
+    captured_at: "2026-08-30"
+  }]);
+});
+
 test("extractMaxPageNumber reads pagination links and labels", () => {
   const html = `
     <nav>

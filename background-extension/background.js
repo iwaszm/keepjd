@@ -9,13 +9,11 @@ import {
   PAGES_PER_ALARM_TICK,
   RETRY_DELAY_MS,
   SNAPSHOT_SAVE_INTERVAL_PAGES,
-  STREAM_EARLY_ABORT_ENABLED,
-  STREAM_FULL_READ_FALLBACK_BYTES,
-  STREAM_MIN_BYTES,
   STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES,
   WRITE_UNCHANGED_OBSERVATIONS
 } from "./config.js";
 import { TARGET_PAGES } from "./target-pages.js";
+import { fetchSearchPageHtml } from "./stream-fetch.js";
 import {
   buildPageUrl,
   extractMaxPageNumber,
@@ -399,60 +397,6 @@ function handlePageError(state, item, pageUrl, pageNumber, error) {
     console.error("Joybuy collector badge update failed", badgeError);
   });
   console.error("Joybuy collector page failed", item.lastError);
-}
-
-async function fetchSearchPageHtml(pageUrl, allowEarlyAbort) {
-  const response = await fetch(pageUrl, {
-    credentials: "include",
-    cache: "no-store"
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-  if (!allowEarlyAbort || !STREAM_EARLY_ABORT_ENABLED || !response.body) {
-    const html = await response.text();
-    return { html, partialRead: false, bytesRead: html.length };
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let html = "";
-  let bytesRead = 0;
-  let earlyAbortAvailable = true;
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-
-    bytesRead += value.byteLength;
-    html += decoder.decode(value, { stream: true });
-
-    if (earlyAbortAvailable && bytesRead >= STREAM_MIN_BYTES && hasCompleteProductNextScript(html)) {
-      await reader.cancel();
-      html += decoder.decode();
-      return { html, partialRead: true, bytesRead };
-    }
-
-    if (earlyAbortAvailable && bytesRead >= STREAM_FULL_READ_FALLBACK_BYTES && !hasProductNextScriptStart(html)) {
-      earlyAbortAvailable = false;
-    }
-  }
-
-  html += decoder.decode();
-  return { html, partialRead: false, bytesRead };
-}
-
-function hasProductNextScriptStart(html) {
-  return /<script\b[^>]*>[\s\S]*self\.__next_[sf][\s\S]*(?:\/dp\/|skuId|productId|wareId|price)/i.test(html);
-}
-
-function hasCompleteProductNextScript(html) {
-  const pattern = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
-  let match;
-  while ((match = pattern.exec(html))) {
-    const text = match[1] || "";
-    if (/self\.__next_[sf]/i.test(text) && /(?:\/dp\/|skuId|productId|wareId|price)/i.test(text)) return true;
-  }
-  return false;
 }
 
 async function postObservations(observations) {
