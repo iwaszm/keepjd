@@ -6,6 +6,7 @@ const pagesNode = document.getElementById("pages");
 const foundNode = document.getElementById("found");
 const postedNode = document.getElementById("posted");
 const bufferedNode = document.getElementById("buffered");
+const partialNode = document.getElementById("partial");
 const skippedNode = document.getElementById("skipped");
 const failedNode = document.getElementById("failed");
 const targetNode = document.getElementById("target");
@@ -45,6 +46,7 @@ async function refreshState() {
   foundNode.textContent = totals.observationsFound || 0;
   postedNode.textContent = totals.observationsPosted || 0;
   bufferedNode.textContent = totals.observationsBuffered || 0;
+  partialNode.textContent = totals.partialReads || 0;
   skippedNode.textContent = totals.observationsSkipped || 0;
   failedNode.textContent = totals.observationsFailed || 0;
   targetNode.textContent = targetText(state, queue, activeTarget);

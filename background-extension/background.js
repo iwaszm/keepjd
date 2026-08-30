@@ -4,9 +4,11 @@ import {
   MAX_PAGES_PER_TARGET,
   MAX_PAGE_RETRIES,
   OBSERVATION_DELAY_MS,
+  PAGE_FETCH_CONCURRENCY,
   PAGE_DELAY_MS,
   PAGES_PER_ALARM_TICK,
   RETRY_DELAY_MS,
+  SNAPSHOT_SAVE_INTERVAL_PAGES,
   STREAM_EARLY_ABORT_ENABLED,
   STREAM_FULL_READ_FALLBACK_BYTES,
   STREAM_MIN_BYTES,
@@ -128,6 +130,7 @@ async function startCollection(reason) {
       pagesFetched: 0,
       observationsFound: 0,
       observationsPosted: 0,
+      partialReads: 0,
       observationsBuffered: pending.length,
       observationsSkipped: 0,
       observationsFailed: 0,
@@ -144,10 +147,13 @@ async function processQueue() {
   if (!state.running || state.paused) return;
   await setBadge("RUN", "#2563eb");
 
+  const snapshotCache = await loadSnapshotCache();
+  let snapshotDirty = false;
   let pagesLeft = PAGES_PER_ALARM_TICK;
   while (pagesLeft > 0) {
     const item = state.queue.find((entry) => !entry.done);
     if (!item) {
+      if (snapshotDirty) await saveSnapshotCache(snapshotCache);
       await flushPendingObservations(state);
       state.running = false;
       state.finishedAt = new Date().toISOString();
@@ -159,22 +165,30 @@ async function processQueue() {
       return;
     }
 
-    const didProcessPage = await collectPage(state, item);
+    const pageCount = Math.min(PAGE_FETCH_CONCURRENCY, pagesLeft);
+    const result = await collectPages(state, item, snapshotCache, pageCount);
+    snapshotDirty = snapshotDirty || result.snapshotDirty;
     state.updatedAt = new Date().toISOString();
     await saveProgressState(state);
     const latestState = await loadState();
     if (!latestState.running || latestState.paused) {
+      if (snapshotDirty) await saveSnapshotCache(snapshotCache);
       chrome.alarms.clear(ALARM_NAME);
       await setBadge(latestState.paused ? "PAUSE" : "", latestState.paused ? "#a16207" : "#6b7280");
       return;
     }
 
-    if (!didProcessPage) break;
+    if (!result.didProcessPage) break;
 
-    pagesLeft -= 1;
+    pagesLeft -= result.pagesProcessed;
+    if (snapshotDirty && state.totals.pagesFetched % SNAPSHOT_SAVE_INTERVAL_PAGES === 0) {
+      await saveSnapshotCache(snapshotCache);
+      snapshotDirty = false;
+    }
     if (pagesLeft > 0) await sleep(PAGE_DELAY_MS);
   }
 
+  if (snapshotDirty) await saveSnapshotCache(snapshotCache);
   state.updatedAt = new Date().toISOString();
   await saveState(state);
   chrome.alarms.create(ALARM_NAME, { delayInMinutes: 0.1 });
@@ -210,128 +224,181 @@ async function resumeCollection() {
   await processQueue();
 }
 
-async function collectPage(state, item) {
+async function collectPages(state, item, snapshotCache, pageCount) {
   if (item.nextPage > item.maxPage) {
     markTargetDone(state, item, "max_page_reached");
-    return true;
+    return { didProcessPage: true, pagesProcessed: 0, snapshotDirty: false };
   }
 
   if (item.retryAfter && Date.parse(item.retryAfter) > Date.now()) {
-    return false;
+    return { didProcessPage: false, pagesProcessed: 0, snapshotDirty: false };
   }
 
-  const pageUrl = buildPageUrl(item.targetUrl, item.nextPage);
-  console.info("Joybuy collector fetching page", pageUrl);
+  const startPage = item.nextPage;
+  const endPage = Math.min(item.maxPage, startPage + pageCount - 1);
+  const pageNumbers = [];
+  for (let pageNumber = startPage; pageNumber <= endPage; pageNumber += 1) {
+    pageNumbers.push(pageNumber);
+  }
 
-  try {
-    const page = await fetchSearchPageHtml(pageUrl, Boolean(item.configuredMaxPage));
-    const html = page.html;
-    const detectedMaxPage = extractMaxPageNumber(html);
-    if (detectedMaxPage !== null) {
-      item.detectedMaxPage = detectedMaxPage;
-      item.maxPageDetected = true;
-      if (!item.configuredMaxPage) {
-        item.maxPage = Math.max(item.maxPage, detectedMaxPage);
-      }
+  console.info("Joybuy collector fetching pages", {
+    targetIndex: item.targetIndex,
+    startPage,
+    endPage,
+    concurrency: pageNumbers.length
+  });
+
+  const fetchedPages = await Promise.all(pageNumbers.map(async (pageNumber) => {
+    const pageUrl = buildPageUrl(item.targetUrl, pageNumber);
+    try {
+      const page = await fetchSearchPageHtml(pageUrl, Boolean(item.configuredMaxPage));
+      return { ok: true, pageNumber, pageUrl, page };
+    } catch (error) {
+      return { ok: false, pageNumber, pageUrl, error };
+    }
+  }));
+
+  let pagesProcessed = 0;
+  let snapshotDirty = false;
+  const seen = new Set(item.seenProductIds);
+  const observationsToPost = [];
+  let skippedCountTotal = 0;
+
+  for (const fetched of fetchedPages) {
+    if (!fetched.ok) {
+      handlePageError(state, item, fetched.pageUrl, fetched.pageNumber, fetched.error);
+      return { didProcessPage: false, pagesProcessed, snapshotDirty };
     }
 
-    const observations = extractSearchPageObservations(html);
-    const seen = new Set(item.seenProductIds);
-    const snapshotCache = await loadSnapshotCache();
-    const freshObservations = observations.filter((observation) => !seen.has(observation.joybuy_product_id));
-    const observationsToPost = [];
-    let queuedCount = 0;
-    let postedCount = 0;
-    let skippedCount = 0;
-
-    for (const observation of freshObservations) {
-      if (shouldPostObservation(observation, snapshotCache)) {
-        observationsToPost.push(observation);
-      } else {
-        skippedCount += 1;
-      }
-
-      updateSnapshotCache(snapshotCache, observation);
-      seen.add(observation.joybuy_product_id);
-    }
-
-    if (observationsToPost.length) {
-      queuedCount = await queuePendingObservations(observationsToPost);
-      state.totals.observationsBuffered = queuedCount;
-      if (queuedCount >= BATCH_FLUSH_SIZE) {
-        postedCount = await flushPendingObservations(state);
-      }
-      if (OBSERVATION_DELAY_MS > 0) await sleep(OBSERVATION_DELAY_MS);
-    }
-
-    await saveSnapshotCache(snapshotCache);
-
-    item.seenProductIds = [...seen];
-    item.emptyPages = observations.length ? 0 : (item.emptyPages || 0) + 1;
-    item.lastPageUrl = pageUrl;
-    item.lastPagePartialRead = page.partialRead;
-    item.lastPageBytesRead = page.bytesRead;
-    item.lastPageObservationCount = observations.length;
-    item.lastPageFreshObservationCount = freshObservations.length;
-    item.lastPagePostedObservationCount = postedCount;
-    item.lastPageQueuedObservationCount = observationsToPost.length;
-    item.lastPageSkippedObservationCount = skippedCount;
-    item.retryCount = 0;
-    item.retryAfter = null;
-    item.nextPage += 1;
-
-    item.pagesFetched = (item.pagesFetched || 0) + 1;
-    item.observationsFound = (item.observationsFound || 0) + observations.length;
-    item.observationsPosted = (item.observationsPosted || 0) + postedCount;
-    item.observationsSkipped = (item.observationsSkipped || 0) + skippedCount;
-
-    state.totals.pagesFetched += 1;
-    state.totals.observationsFound += observations.length;
-    state.totals.observationsSkipped = (state.totals.observationsSkipped || 0) + skippedCount;
-
-    console.info("Joybuy collector page result", {
-      pageUrl,
-      partialRead: page.partialRead,
-      bytesRead: page.bytesRead,
-      targetIndex: item.targetIndex,
-      detectedMaxPage,
-      maxPage: item.maxPage,
-      nextPage: item.nextPage,
-      observations: observations.length,
-      freshObservations: freshObservations.length,
-      queuedObservations: observationsToPost.length,
-      bufferedObservations: state.totals.observationsBuffered || 0,
-      postedObservations: postedCount,
-      skippedObservations: skippedCount,
-      totals: state.totals
-    });
+    const pageResult = processFetchedPage(state, item, fetched, snapshotCache, seen);
+    pagesProcessed += 1;
+    snapshotDirty = snapshotDirty || pageResult.snapshotDirty;
+    skippedCountTotal += pageResult.skippedCount;
+    observationsToPost.push(...pageResult.observationsToPost);
 
     if (!item.maxPageDetected && item.emptyPages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
-      await flushPendingObservations(state);
-      markTargetDone(state, item, "empty_page_stop");
-    } else if (item.nextPage > item.maxPage) {
-      await flushPendingObservations(state);
-      markTargetDone(state, item, "max_page_reached");
+      break;
     }
-  } catch (error) {
-    item.lastError = `${pageUrl}: ${error.message}`;
-    state.lastError = item.lastError;
-    state.totals.observationsFailed += 1;
-    item.retryCount = (item.retryCount || 0) + 1;
-    if (item.retryCount > MAX_PAGE_RETRIES) {
-      item.lastSkippedPageUrl = pageUrl;
-      item.nextPage += 1;
-      item.retryCount = 0;
-      item.retryAfter = null;
-    } else {
-      item.retryAfter = new Date(Date.now() + RETRY_DELAY_MS).toISOString();
+
+    if (item.nextPage > item.maxPage) {
+      break;
     }
-    await setBadge("ERR", "#b91c1c");
-    console.error("Joybuy collector page failed", item.lastError);
-    return false;
   }
 
-  return true;
+  let postedCount = 0;
+  if (observationsToPost.length) {
+    const queuedCount = await queuePendingObservations(observationsToPost);
+    state.totals.observationsBuffered = queuedCount;
+    if (queuedCount >= BATCH_FLUSH_SIZE) {
+      postedCount = await flushPendingObservations(state);
+    }
+    if (OBSERVATION_DELAY_MS > 0) await sleep(OBSERVATION_DELAY_MS);
+  }
+
+  item.seenProductIds = [...seen];
+  item.observationsPosted = (item.observationsPosted || 0) + postedCount;
+  item.lastBatchPageCount = pagesProcessed;
+  item.lastBatchQueuedObservationCount = observationsToPost.length;
+  item.lastBatchPostedObservationCount = postedCount;
+  item.lastBatchSkippedObservationCount = skippedCountTotal;
+
+  if (!item.maxPageDetected && item.emptyPages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
+    await flushPendingObservations(state);
+    markTargetDone(state, item, "empty_page_stop");
+  } else if (item.nextPage > item.maxPage) {
+    await flushPendingObservations(state);
+    markTargetDone(state, item, "max_page_reached");
+  }
+
+  return { didProcessPage: true, pagesProcessed, snapshotDirty };
+}
+
+function processFetchedPage(state, item, fetched, snapshotCache, seen) {
+  const html = fetched.page.html;
+  const detectedMaxPage = extractMaxPageNumber(html);
+  if (detectedMaxPage !== null) {
+    item.detectedMaxPage = detectedMaxPage;
+    item.maxPageDetected = true;
+    if (!item.configuredMaxPage) {
+      item.maxPage = Math.max(item.maxPage, detectedMaxPage);
+    }
+  }
+
+  const observations = extractSearchPageObservations(html);
+  const targetSnapshotCache = targetCacheFor(snapshotCache, item);
+  const freshObservations = observations.filter((observation) => !seen.has(observation.joybuy_product_id));
+  const observationsToPost = [];
+  let skippedCount = 0;
+
+  for (const observation of freshObservations) {
+    if (shouldPostObservation(observation, targetSnapshotCache, snapshotCache)) {
+      observationsToPost.push(observation);
+    } else {
+      skippedCount += 1;
+    }
+
+    updateSnapshotCache(targetSnapshotCache, observation);
+    seen.add(observation.joybuy_product_id);
+  }
+
+  item.emptyPages = observations.length ? 0 : (item.emptyPages || 0) + 1;
+  item.lastPageUrl = fetched.pageUrl;
+  item.lastPagePartialRead = fetched.page.partialRead;
+  item.lastPageBytesRead = fetched.page.bytesRead;
+  item.lastPageObservationCount = observations.length;
+  item.lastPageFreshObservationCount = freshObservations.length;
+  item.lastPagePostedObservationCount = 0;
+  item.lastPageQueuedObservationCount = observationsToPost.length;
+  item.lastPageSkippedObservationCount = skippedCount;
+  item.retryCount = 0;
+  item.retryAfter = null;
+  item.nextPage = fetched.pageNumber + 1;
+
+  item.pagesFetched = (item.pagesFetched || 0) + 1;
+  item.observationsFound = (item.observationsFound || 0) + observations.length;
+  item.observationsSkipped = (item.observationsSkipped || 0) + skippedCount;
+
+  state.totals.pagesFetched += 1;
+  state.totals.observationsFound += observations.length;
+  state.totals.partialReads = (state.totals.partialReads || 0) + (fetched.page.partialRead ? 1 : 0);
+  state.totals.observationsSkipped = (state.totals.observationsSkipped || 0) + skippedCount;
+
+  console.info("Joybuy collector page result", {
+    pageUrl: fetched.pageUrl,
+    partialRead: fetched.page.partialRead,
+    bytesRead: fetched.page.bytesRead,
+    targetIndex: item.targetIndex,
+    detectedMaxPage,
+    maxPage: item.maxPage,
+    nextPage: item.nextPage,
+    observations: observations.length,
+    freshObservations: freshObservations.length,
+    queuedObservations: observationsToPost.length,
+    skippedObservations: skippedCount,
+    totals: state.totals
+  });
+
+  return { observationsToPost, skippedCount, snapshotDirty: freshObservations.length > 0 };
+}
+
+function handlePageError(state, item, pageUrl, pageNumber, error) {
+  item.lastError = `${pageUrl}: ${error.message}`;
+  state.lastError = item.lastError;
+  state.totals.observationsFailed += 1;
+  item.retryCount = (item.retryCount || 0) + 1;
+  if (item.retryCount > MAX_PAGE_RETRIES) {
+    item.lastSkippedPageUrl = pageUrl;
+    item.nextPage = pageNumber + 1;
+    item.retryCount = 0;
+    item.retryAfter = null;
+  } else {
+    item.nextPage = pageNumber;
+    item.retryAfter = new Date(Date.now() + RETRY_DELAY_MS).toISOString();
+  }
+  setBadge("ERR", "#b91c1c").catch((badgeError) => {
+    console.error("Joybuy collector badge update failed", badgeError);
+  });
+  console.error("Joybuy collector page failed", item.lastError);
 }
 
 async function fetchSearchPageHtml(pageUrl, allowEarlyAbort) {
@@ -447,6 +514,7 @@ async function setIdleStatus(reason) {
       observationsFound: 0,
       observationsPosted: 0,
       observationsBuffered: 0,
+      partialReads: 0,
       observationsSkipped: 0,
       observationsFailed: 0,
       targetsDone: 0
@@ -555,17 +623,32 @@ async function saveSnapshotCache(cache) {
   await chrome.storage.local.set({ [SNAPSHOT_CACHE_KEY]: cache });
 }
 
-function shouldPostObservation(observation, cache) {
+function shouldPostObservation(observation, targetCache, rootCache) {
   if (WRITE_UNCHANGED_OBSERVATIONS) return true;
 
-  const previous = cache[observation.joybuy_product_id];
+  const previous = targetCache[observation.joybuy_product_id] || rootCache[observation.joybuy_product_id];
   if (!previous) return true;
 
   return previous.price !== observation.price || previous.availability !== observation.availability;
 }
 
-function updateSnapshotCache(cache, observation) {
-  cache[observation.joybuy_product_id] = {
+function updateSnapshotCache(targetCache, observation) {
+  targetCache[observation.joybuy_product_id] = snapshotValue(observation);
+}
+
+function targetCacheFor(cache, item) {
+  cache.targets = cache.targets && typeof cache.targets === "object" ? cache.targets : {};
+  const key = targetCacheKey(item);
+  cache.targets[key] = cache.targets[key] && typeof cache.targets[key] === "object" ? cache.targets[key] : {};
+  return cache.targets[key];
+}
+
+function targetCacheKey(item) {
+  return item.targetLabel || item.targetUrl || `target-${item.targetIndex}`;
+}
+
+function snapshotValue(observation) {
+  return {
     price: observation.price,
     availability: observation.availability || "unknown",
     lastSeenDate: observation.captured_at
@@ -574,6 +657,12 @@ function updateSnapshotCache(cache, observation) {
 
 function normalizeState(state) {
   if (!Array.isArray(state.queue)) return state;
+
+  state.totals = {
+    ...(state.totals || {}),
+    partialReads: state.totals?.partialReads ?? 0,
+    observationsBuffered: state.totals?.observationsBuffered ?? 0
+  };
 
   state.queue = state.queue.map((item) => ({
     ...item,
