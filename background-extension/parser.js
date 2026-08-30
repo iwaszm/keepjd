@@ -52,6 +52,14 @@ export function extractMaxPageNumber(html) {
     pageNumbers.push(Number(match[1]));
   }
 
+  for (const match of text.matchAll(/["']pageCount["']\s*:\s*(\d+)/gi)) {
+    pageNumbers.push(Number(match[1]));
+  }
+
+  for (const match of text.matchAll(/\\["']pageCount\\["']\s*:\s*(\d+)/gi)) {
+    pageNumbers.push(Number(match[1]));
+  }
+
   const validPageNumbers = pageNumbers.filter((value) => Number.isInteger(value) && value > 0);
   return validPageNumbers.length ? Math.max(...validPageNumbers) : null;
 }

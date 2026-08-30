@@ -153,6 +153,14 @@ test("extractMaxPageNumber reads pagination links and labels", () => {
   assert.equal(extractMaxPageNumber(html), 261);
 });
 
+test("extractMaxPageNumber reads plain and escaped pageCount metadata", () => {
+  assert.equal(extractMaxPageNumber('<script>{"pageCount":7,"pageIndex":1,"pageSize":20}</script>'), 7);
+  assert.equal(
+    extractMaxPageNumber('<script>(self.__next_s=self.__next_s||[]).push([0,{"children":"{\\"pageCount\\":49,\\"pageIndex\\":1,\\"pageSize\\":20}"}])</script>'),
+    49
+  );
+});
+
 test("extractMaxPageNumber returns null when pagination is absent", () => {
   assert.equal(extractMaxPageNumber("<html><body>No pagination</body></html>"), null);
 });
