@@ -27,6 +27,7 @@ const SNAPSHOT_CACHE_KEY = "joybuyBackgroundCollectorSnapshots";
 const PENDING_OBSERVATIONS_KEY = "joybuyBackgroundCollectorPendingObservations";
 const OBSERVE_URL = `${API_BASE_URL}/products/observe`;
 const OBSERVE_BATCH_URL = `${API_BASE_URL}/products/observe-batch`;
+const MISSING_PRICE_POINTS_URL = `${API_BASE_URL}/products/missing-price-points?limit=10000`;
 
 console.info("Joybuy background collector service worker loaded");
 
@@ -96,6 +97,7 @@ async function startCollection(reason) {
   console.info("Joybuy background collection starting", { reason, targets: TARGET_PAGES.length });
   await chrome.alarms.clear(ALARM_NAME);
   const pending = await loadPendingObservations();
+  const missingPricePointProductIds = await fetchMissingPricePointProductIds();
   await setBadge("RUN", "#2563eb");
   const startedAt = new Date().toISOString();
   const queue = TARGET_PAGES.map((target, index) => {
@@ -129,11 +131,13 @@ async function startCollection(reason) {
       observationsFound: 0,
       observationsPosted: 0,
       partialReads: 0,
+      missingPricePointBackfillRemaining: missingPricePointProductIds.length,
       observationsBuffered: pending.length,
       observationsSkipped: 0,
       observationsFailed: 0,
       targetsDone: 0
     },
+    missingPricePointProductIds,
     lastError: null
   });
 
@@ -259,6 +263,7 @@ async function collectPages(state, item, snapshotCache, pageCount) {
   let pagesProcessed = 0;
   let snapshotDirty = false;
   const seen = new Set(item.seenProductIds);
+  const missingPricePointProductIds = new Set(state.missingPricePointProductIds || []);
   const observationsToPost = [];
   let skippedCountTotal = 0;
 
@@ -268,7 +273,7 @@ async function collectPages(state, item, snapshotCache, pageCount) {
       return { didProcessPage: false, pagesProcessed, snapshotDirty };
     }
 
-    const pageResult = processFetchedPage(state, item, fetched, snapshotCache, seen);
+    const pageResult = processFetchedPage(state, item, fetched, snapshotCache, seen, missingPricePointProductIds);
     pagesProcessed += 1;
     snapshotDirty = snapshotDirty || pageResult.snapshotDirty;
     skippedCountTotal += pageResult.skippedCount;
@@ -299,6 +304,8 @@ async function collectPages(state, item, snapshotCache, pageCount) {
   item.lastBatchQueuedObservationCount = observationsToPost.length;
   item.lastBatchPostedObservationCount = postedCount;
   item.lastBatchSkippedObservationCount = skippedCountTotal;
+  state.missingPricePointProductIds = [...missingPricePointProductIds];
+  state.totals.missingPricePointBackfillRemaining = missingPricePointProductIds.size;
 
   if (!item.maxPageDetected && item.emptyPages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
     await flushPendingObservations(state);
@@ -311,7 +318,7 @@ async function collectPages(state, item, snapshotCache, pageCount) {
   return { didProcessPage: true, pagesProcessed, snapshotDirty };
 }
 
-function processFetchedPage(state, item, fetched, snapshotCache, seen) {
+function processFetchedPage(state, item, fetched, snapshotCache, seen, missingPricePointProductIds) {
   const html = fetched.page.html;
   const detectedMaxPage = extractMaxPageNumber(html);
   if (detectedMaxPage !== null) {
@@ -329,8 +336,9 @@ function processFetchedPage(state, item, fetched, snapshotCache, seen) {
   let skippedCount = 0;
 
   for (const observation of freshObservations) {
-    if (shouldPostObservation(observation, targetSnapshotCache, snapshotCache)) {
+    if (shouldPostObservation(observation, targetSnapshotCache, snapshotCache, missingPricePointProductIds)) {
       observationsToPost.push(observation);
+      missingPricePointProductIds.delete(observation.joybuy_product_id);
     } else {
       skippedCount += 1;
     }
@@ -459,6 +467,7 @@ async function setIdleStatus(reason) {
       observationsPosted: 0,
       observationsBuffered: 0,
       partialReads: 0,
+      missingPricePointBackfillRemaining: 0,
       observationsSkipped: 0,
       observationsFailed: 0,
       targetsDone: 0
@@ -516,6 +525,22 @@ async function loadPendingObservations() {
   return Array.isArray(data[PENDING_OBSERVATIONS_KEY]) ? data[PENDING_OBSERVATIONS_KEY] : [];
 }
 
+async function fetchMissingPricePointProductIds() {
+  try {
+    const response = await fetch(MISSING_PRICE_POINTS_URL, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const body = await response.json();
+    if (!body?.ok || !Array.isArray(body.joybuy_product_ids)) {
+      throw new Error("invalid missing price points response");
+    }
+    console.info("Joybuy missing price point products loaded", { count: body.joybuy_product_ids.length });
+    return body.joybuy_product_ids;
+  } catch (error) {
+    console.error("Joybuy missing price point products failed to load", error);
+    return [];
+  }
+}
+
 async function savePendingObservations(observations) {
   await chrome.storage.local.set({ [PENDING_OBSERVATIONS_KEY]: observations });
 }
@@ -567,7 +592,8 @@ async function saveSnapshotCache(cache) {
   await chrome.storage.local.set({ [SNAPSHOT_CACHE_KEY]: cache });
 }
 
-function shouldPostObservation(observation, targetCache, rootCache) {
+function shouldPostObservation(observation, targetCache, rootCache, missingPricePointProductIds = new Set()) {
+  if (missingPricePointProductIds.has(observation.joybuy_product_id)) return true;
   if (WRITE_UNCHANGED_OBSERVATIONS) return true;
 
   const previous = targetCache[observation.joybuy_product_id] || rootCache[observation.joybuy_product_id];
@@ -605,6 +631,7 @@ function normalizeState(state) {
   state.totals = {
     ...(state.totals || {}),
     partialReads: state.totals?.partialReads ?? 0,
+    missingPricePointBackfillRemaining: state.totals?.missingPricePointBackfillRemaining ?? (state.missingPricePointProductIds || []).length,
     observationsBuffered: state.totals?.observationsBuffered ?? 0
   };
 

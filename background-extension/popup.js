@@ -7,6 +7,7 @@ const foundNode = document.getElementById("found");
 const postedNode = document.getElementById("posted");
 const bufferedNode = document.getElementById("buffered");
 const partialNode = document.getElementById("partial");
+const backfillNode = document.getElementById("backfill");
 const skippedNode = document.getElementById("skipped");
 const failedNode = document.getElementById("failed");
 const targetNode = document.getElementById("target");
@@ -47,6 +48,7 @@ async function refreshState() {
   postedNode.textContent = totals.observationsPosted || 0;
   bufferedNode.textContent = totals.observationsBuffered || 0;
   partialNode.textContent = totals.partialReads || 0;
+  backfillNode.textContent = totals.missingPricePointBackfillRemaining || 0;
   skippedNode.textContent = totals.observationsSkipped || 0;
   failedNode.textContent = totals.observationsFailed || 0;
   targetNode.textContent = targetText(state, queue, activeTarget);

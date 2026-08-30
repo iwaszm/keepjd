@@ -110,6 +110,54 @@ test("GET /products/:id/prices includes the latest point before the requested ra
   }]);
 });
 
+test("GET /products/missing-price-points returns products without history", async () => {
+  const db = new FakeD1();
+  db.products.push(
+    {
+      id: 1,
+      joybuy_product_id: "missing-one",
+      url: "https://www.joybuy.de/dp/missing-one",
+      title: null,
+      created_at: "2026-08-28",
+      updated_at: "2026-08-28"
+    },
+    {
+      id: 2,
+      joybuy_product_id: "has-history",
+      url: "https://www.joybuy.de/dp/has-history",
+      title: null,
+      created_at: "2026-08-28",
+      updated_at: "2026-08-28"
+    },
+    {
+      id: 3,
+      joybuy_product_id: "missing-two",
+      url: "https://www.joybuy.de/dp/missing-two",
+      title: null,
+      created_at: "2026-08-28",
+      updated_at: "2026-08-28"
+    }
+  );
+  db.pricePoints.push({
+    id: 1,
+    product_id: 2,
+    price: 3.99,
+    list_price: null,
+    promo_price: null,
+    availability: "in_stock",
+    captured_at: "2026-08-28"
+  });
+
+  const response = await handleRequest(new Request("https://api.example.test/products/missing-price-points"), { DB: db });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    count: 2,
+    joybuy_product_ids: ["missing-one", "missing-two"]
+  });
+});
+
 test("POST /products/observe-batch records multiple observations", async () => {
   const db = new FakeD1();
 
@@ -209,6 +257,16 @@ class FakeStatement {
   }
 
   async all() {
+    if (/FROM products p\s+LEFT JOIN price_points pp ON pp\.product_id = p\.id/i.test(this.sql)) {
+      const [limit] = this.values;
+      const results = this.db.products
+        .filter((product) => !this.db.pricePoints.some((point) => point.product_id === product.id))
+        .sort((a, b) => a.id - b.id)
+        .slice(0, limit)
+        .map((product) => ({ joybuy_product_id: product.joybuy_product_id }));
+      return { results };
+    }
+
     if (/FROM price_points\s+WHERE product_id = \?/i.test(this.sql)) {
       const [productId, since] = this.values;
       const carryIn = this.db.pricePoints

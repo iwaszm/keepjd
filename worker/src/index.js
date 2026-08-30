@@ -27,6 +27,10 @@ export async function handleRequest(request, env) {
     return json({ ok: true, service: "joybuy-price-history" });
   }
 
+  if (request.method === "GET" && url.pathname === "/products/missing-price-points") {
+    return getProductsMissingPricePoints(env.DB, url.searchParams.get("limit"));
+  }
+
   const pricesMatch = url.pathname.match(/^\/products\/([^/]+)\/prices$/);
   if (request.method === "GET" && pricesMatch) {
     return getPrices(env.DB, decodeURIComponent(pricesMatch[1]), url.searchParams.get("range") || "30d");
@@ -41,6 +45,24 @@ export async function handleRequest(request, env) {
   }
 
   return json({ error: "Not found" }, 404);
+}
+
+async function getProductsMissingPricePoints(db, limitParam) {
+  const limit = clampLimit(limitParam, 10000);
+  const { results } = await db
+    .prepare(
+      `SELECT p.joybuy_product_id
+       FROM products p
+       LEFT JOIN price_points pp ON pp.product_id = p.id
+       WHERE pp.id IS NULL
+       ORDER BY p.id ASC
+       LIMIT ?`
+    )
+    .bind(limit)
+    .all();
+
+  const joybuyProductIds = (results || []).map((row) => row.joybuy_product_id).filter(Boolean);
+  return json({ ok: true, count: joybuyProductIds.length, joybuy_product_ids: joybuyProductIds });
 }
 
 async function getPrices(db, joybuyProductId, range) {
@@ -241,6 +263,12 @@ function validateObservation(payload) {
 function normalizeAvailability(value) {
   if (value === "in_stock" || value === "out_of_stock") return value;
   return "unknown";
+}
+
+function clampLimit(value, defaultLimit) {
+  const limit = Number(value || defaultLimit);
+  if (!Number.isInteger(limit) || limit <= 0) return defaultLimit;
+  return Math.min(limit, 10000);
 }
 
 function json(body, status = 200) {
