@@ -442,7 +442,7 @@ async function fetchSearchPageHtml(pageUrl, allowEarlyAbort) {
 }
 
 function hasProductNextScriptStart(html) {
-  return /<script\b[^>]*>[\s\S]*self\.__next_[sf][\s\S]*\/dp\//i.test(html);
+  return /<script\b[^>]*>[\s\S]*self\.__next_[sf][\s\S]*(?:\/dp\/|skuId|productId|wareId|price)/i.test(html);
 }
 
 function hasCompleteProductNextScript(html) {
@@ -450,7 +450,7 @@ function hasCompleteProductNextScript(html) {
   let match;
   while ((match = pattern.exec(html))) {
     const text = match[1] || "";
-    if (/self\.__next_[sf]/i.test(text) && /\/dp\//i.test(text) && /"offers"\s*:/i.test(text)) return true;
+    if (/self\.__next_[sf]/i.test(text) && /(?:\/dp\/|skuId|productId|wareId|price)/i.test(text)) return true;
   }
   return false;
 }
