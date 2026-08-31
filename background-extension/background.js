@@ -4,6 +4,7 @@ import {
   MAX_PAGES_PER_TARGET,
   MAX_PAGE_RETRIES,
   OBSERVATION_DELAY_MS,
+  OBSERVE_BATCH_TIMEOUT_MS,
   PAGE_FETCH_CONCURRENCY,
   PAGE_FETCH_TIMEOUT_MS,
   PAGE_DELAY_MS,
@@ -135,6 +136,7 @@ async function startCollection(reason) {
       observationsFound: 0,
       observationsPosted: 0,
       partialReads: 0,
+      uploadingObservations: 0,
       missingPricePointBackfillRemaining: missingPricePointProductIds.length,
       observationsBuffered: pending.length,
       observationsSkipped: 0,
@@ -448,11 +450,22 @@ async function postObservations(observations) {
 }
 
 async function postObservationChunk(observations) {
-  const response = await fetch(OBSERVE_BATCH_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ observations })
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort(new Error(`observe batch timeout after ${OBSERVE_BATCH_TIMEOUT_MS}ms`));
+  }, OBSERVE_BATCH_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(OBSERVE_BATCH_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ observations }),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     await postObservationsIndividually(observations);
@@ -499,6 +512,7 @@ async function setIdleStatus(reason) {
       observationsPosted: 0,
       observationsBuffered: 0,
       partialReads: 0,
+      uploadingObservations: 0,
       missingPricePointBackfillRemaining: 0,
       observationsSkipped: 0,
       observationsFailed: 0,
@@ -539,17 +553,38 @@ async function queuePendingObservations(observations) {
 async function flushPendingObservations(state = null) {
   const pending = await loadPendingObservations();
   if (!pending.length) {
-    if (state) state.totals.observationsBuffered = 0;
+    if (state) {
+      state.totals.observationsBuffered = 0;
+      state.totals.uploadingObservations = 0;
+    }
     return 0;
   }
 
-  const postedCount = await postObservations(pending);
-  await savePendingObservations([]);
   if (state) {
-    state.totals.observationsPosted = (state.totals.observationsPosted || 0) + postedCount;
-    state.totals.observationsBuffered = 0;
+    state.totals.uploadingObservations = pending.length;
+    state.lastUploadStartedAt = new Date().toISOString();
+    await saveState(state);
   }
-  return postedCount;
+
+  try {
+    const postedCount = await postObservations(pending);
+    await savePendingObservations([]);
+    if (state) {
+      state.totals.observationsPosted = (state.totals.observationsPosted || 0) + postedCount;
+      state.totals.observationsBuffered = 0;
+      state.totals.uploadingObservations = 0;
+      state.lastUploadFinishedAt = new Date().toISOString();
+    }
+    return postedCount;
+  } catch (error) {
+    if (state) {
+      state.totals.uploadingObservations = 0;
+      state.lastUploadFailedAt = new Date().toISOString();
+      state.lastError = `upload failed: ${error.message}`;
+      await saveState(state);
+    }
+    throw error;
+  }
 }
 
 async function loadPendingObservations() {
@@ -663,6 +698,7 @@ function normalizeState(state) {
   state.totals = {
     ...(state.totals || {}),
     partialReads: state.totals?.partialReads ?? 0,
+    uploadingObservations: state.totals?.uploadingObservations ?? 0,
     missingPricePointBackfillRemaining: state.totals?.missingPricePointBackfillRemaining ?? (state.missingPricePointProductIds || []).length,
     observationsBuffered: state.totals?.observationsBuffered ?? 0
   };

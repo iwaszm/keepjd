@@ -6,6 +6,7 @@ const pagesNode = document.getElementById("pages");
 const foundNode = document.getElementById("found");
 const postedNode = document.getElementById("posted");
 const bufferedNode = document.getElementById("buffered");
+const uploadingNode = document.getElementById("uploading");
 const partialNode = document.getElementById("partial");
 const backfillNode = document.getElementById("backfill");
 const skippedNode = document.getElementById("skipped");
@@ -47,6 +48,7 @@ async function refreshState() {
   foundNode.textContent = totals.observationsFound || 0;
   postedNode.textContent = totals.observationsPosted || 0;
   bufferedNode.textContent = totals.observationsBuffered || 0;
+  uploadingNode.textContent = totals.uploadingObservations || 0;
   partialNode.textContent = totals.partialReads || 0;
   backfillNode.textContent = totals.missingPricePointBackfillRemaining || 0;
   skippedNode.textContent = totals.observationsSkipped || 0;
