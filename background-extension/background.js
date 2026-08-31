@@ -5,6 +5,7 @@ import {
   MAX_PAGE_RETRIES,
   OBSERVATION_DELAY_MS,
   PAGE_FETCH_CONCURRENCY,
+  PAGE_FETCH_TIMEOUT_MS,
   PAGE_DELAY_MS,
   PAGES_PER_ALARM_TICK,
   RETRY_DELAY_MS,
@@ -28,6 +29,8 @@ const PENDING_OBSERVATIONS_KEY = "joybuyBackgroundCollectorPendingObservations";
 const OBSERVE_URL = `${API_BASE_URL}/products/observe`;
 const OBSERVE_BATCH_URL = `${API_BASE_URL}/products/observe-batch`;
 const MISSING_PRICE_POINTS_URL = `${API_BASE_URL}/products/missing-price-points?limit=10000`;
+const activeFetchControllers = new Set();
+let pauseAbortRequested = false;
 
 console.info("Joybuy background collector service worker loaded");
 
@@ -96,6 +99,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 async function startCollection(reason) {
   console.info("Joybuy background collection starting", { reason, targets: TARGET_PAGES.length });
   await chrome.alarms.clear(ALARM_NAME);
+  pauseAbortRequested = false;
   const pending = await loadPendingObservations();
   const missingPricePointProductIds = await fetchMissingPricePointProductIds();
   await setBadge("RUN", "#2563eb");
@@ -200,7 +204,8 @@ async function pauseCollection() {
   const state = await loadState();
   if (!state.running) return;
 
-  await flushPendingObservations(state);
+  pauseAbortRequested = true;
+  abortActiveFetches();
   state.running = false;
   state.paused = true;
   state.pausedAt = new Date().toISOString();
@@ -208,6 +213,12 @@ async function pauseCollection() {
   await saveState(state);
   chrome.alarms.clear(ALARM_NAME);
   await setBadge("PAUSE", "#a16207");
+  flushPendingObservations(state).then(async () => {
+    state.updatedAt = new Date().toISOString();
+    await saveState(state);
+  }).catch((error) => {
+    console.error("Joybuy background collection failed to flush pending observations while pausing", error);
+  });
 }
 
 async function resumeCollection() {
@@ -215,6 +226,7 @@ async function resumeCollection() {
   const hasPendingQueue = (state.queue || []).some((entry) => !entry.done);
   if (!state.paused || !hasPendingQueue) return;
 
+  pauseAbortRequested = false;
   state.running = true;
   state.paused = false;
   state.pausedAt = null;
@@ -224,6 +236,13 @@ async function resumeCollection() {
   await saveState(state);
   await setBadge("RUN", "#2563eb");
   await processQueue();
+}
+
+function abortActiveFetches() {
+  for (const controller of activeFetchControllers) {
+    controller.abort(new Error("collection paused"));
+  }
+  activeFetchControllers.clear();
 }
 
 async function collectPages(state, item, snapshotCache, pageCount) {
@@ -252,11 +271,20 @@ async function collectPages(state, item, snapshotCache, pageCount) {
 
   const fetchedPages = await Promise.all(pageNumbers.map(async (pageNumber) => {
     const pageUrl = buildPageUrl(item.targetUrl, pageNumber);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort(new Error(`page fetch timeout after ${PAGE_FETCH_TIMEOUT_MS}ms`));
+    }, PAGE_FETCH_TIMEOUT_MS);
+    activeFetchControllers.add(controller);
     try {
-      const page = await fetchSearchPageHtml(pageUrl, Boolean(item.configuredMaxPage));
+      const page = await fetchSearchPageHtml(pageUrl, Boolean(item.configuredMaxPage), { signal: controller.signal });
       return { ok: true, pageNumber, pageUrl, page };
     } catch (error) {
+      if (pauseAbortRequested) return { ok: false, paused: true, pageNumber, pageUrl, error };
       return { ok: false, pageNumber, pageUrl, error };
+    } finally {
+      clearTimeout(timeoutId);
+      activeFetchControllers.delete(controller);
     }
   }));
 
@@ -268,6 +296,10 @@ async function collectPages(state, item, snapshotCache, pageCount) {
   let skippedCountTotal = 0;
 
   for (const fetched of fetchedPages) {
+    if (fetched.paused) {
+      return { didProcessPage: false, pagesProcessed, snapshotDirty };
+    }
+
     if (!fetched.ok) {
       handlePageError(state, item, fetched.pageUrl, fetched.pageNumber, fetched.error);
       return { didProcessPage: false, pagesProcessed, snapshotDirty };

@@ -5,10 +5,11 @@ import {
 } from "./config.js";
 import { extractSearchPageObservations } from "./parser.js";
 
-export async function fetchSearchPageHtml(pageUrl, allowEarlyAbort) {
+export async function fetchSearchPageHtml(pageUrl, allowEarlyAbort, requestInit = {}) {
   const response = await fetch(pageUrl, {
     credentials: "include",
-    cache: "no-store"
+    cache: "no-store",
+    ...requestInit
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
