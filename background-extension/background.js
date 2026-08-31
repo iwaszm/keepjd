@@ -27,7 +27,6 @@ const ALARM_NAME = "joybuy-background-page-collector";
 const STORAGE_KEY = "joybuyBackgroundCollectorState";
 const SNAPSHOT_CACHE_KEY = "joybuyBackgroundCollectorSnapshots";
 const PENDING_OBSERVATIONS_KEY = "joybuyBackgroundCollectorPendingObservations";
-const OBSERVE_URL = `${API_BASE_URL}/products/observe`;
 const OBSERVE_BATCH_URL = `${API_BASE_URL}/products/observe-batch`;
 const MISSING_PRICE_POINTS_URL = `${API_BASE_URL}/products/missing-price-points?limit=10000`;
 const activeFetchControllers = new Set();
@@ -467,26 +466,11 @@ async function postObservationChunk(observations) {
     clearTimeout(timeoutId);
   }
 
-  if (!response.ok) {
-    await postObservationsIndividually(observations);
-    return observations.length;
-  }
+  if (!response.ok) throw new Error(`observe batch failed: HTTP ${response.status}`);
 
   const body = await response.json().catch(() => null);
   if (!body?.ok) throw new Error(`observe batch failed: ${body?.failed ?? "unknown"}`);
   return body.inserted ?? observations.length;
-}
-
-async function postObservationsIndividually(observations) {
-  for (const observation of observations) {
-    const response = await fetch(OBSERVE_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(observation)
-    });
-
-    if (!response.ok) throw new Error(`observe failed: ${response.status}`);
-  }
 }
 
 function markTargetDone(state, item, reason) {
@@ -561,24 +545,42 @@ async function flushPendingObservations(state = null) {
   }
 
   if (state) {
-    state.totals.uploadingObservations = pending.length;
+    state.totals.uploadingObservations = Math.min(BATCH_FLUSH_SIZE, pending.length);
+    state.totals.observationsBuffered = pending.length;
     state.lastUploadStartedAt = new Date().toISOString();
     await saveState(state);
   }
 
+  let remaining = pending;
+  let totalPosted = 0;
   try {
-    const postedCount = await postObservations(pending);
-    await savePendingObservations([]);
-    if (state) {
-      state.totals.observationsPosted = (state.totals.observationsPosted || 0) + postedCount;
-      state.totals.observationsBuffered = 0;
-      state.totals.uploadingObservations = 0;
-      state.lastUploadFinishedAt = new Date().toISOString();
+    while (remaining.length) {
+      const chunk = remaining.slice(0, BATCH_FLUSH_SIZE);
+      if (state) {
+        state.totals.uploadingObservations = chunk.length;
+        state.totals.observationsBuffered = remaining.length;
+        await saveState(state);
+      }
+
+      const postedCount = await postObservationChunk(chunk);
+      totalPosted += postedCount;
+      remaining = remaining.slice(chunk.length);
+      await savePendingObservations(remaining);
+
+      if (state) {
+        state.totals.observationsPosted = (state.totals.observationsPosted || 0) + postedCount;
+        state.totals.observationsBuffered = remaining.length;
+        state.totals.uploadingObservations = 0;
+        state.lastUploadFinishedAt = new Date().toISOString();
+        await saveState(state);
+      }
     }
-    return postedCount;
+
+    return totalPosted;
   } catch (error) {
     if (state) {
       state.totals.uploadingObservations = 0;
+      state.totals.observationsBuffered = remaining.length;
       state.lastUploadFailedAt = new Date().toISOString();
       state.lastError = `upload failed: ${error.message}`;
       await saveState(state);
