@@ -210,6 +210,12 @@ test("extractPageCountNumber falls back to search result skuCount", () => {
   assert.equal(extractPageCountNumber('<div data-exp="{&quot;json_param&quot;:&quot;{\\&quot;skuCount\\&quot;:2891}&quot;}"></div>'), 145);
 });
 
+test("extractPageCountNumber reads escaped search summary page metadata first", () => {
+  const html = String.raw`{\"head\":{\"summary\":{\"orgSkuCount\":2882,\"resultCut\":0,\"resultShowCount\":2882,\"resultCount\":2882,\"page\":{\"pageCount\":145,\"pageIndex\":1,\"pageSize\":20}}}`;
+
+  assert.equal(extractPageCountNumber(html), 145);
+});
+
 test("describeSearchPageHtml counts product page signals", () => {
   const diagnostics = describeSearchPageHtml(`
     <script type="application/ld+json">{"url":"https://www.joybuy.de/dp/example/102554186","offers":{"priceCurrency":"EUR"}}</script>

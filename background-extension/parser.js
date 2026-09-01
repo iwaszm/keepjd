@@ -64,23 +64,15 @@ export function extractMaxPageNumber(html) {
 }
 
 export function extractPageCountNumber(html) {
-  const pageCounts = [];
   const text = String(html || "");
-
-  for (const match of text.matchAll(/["']pageCount["']\s*:\s*(\d+)/gi)) {
-    pageCounts.push(Number(match[1]));
-  }
-
-  for (const match of text.matchAll(/\\["']pageCount\\["']\s*:\s*(\d+)/gi)) {
-    pageCounts.push(Number(match[1]));
-  }
+  const pageCounts = collectMetadataNumbers(text, "pageCount");
 
   const validPageCounts = pageCounts.filter((value) => Number.isInteger(value) && value > 0);
   if (validPageCounts.length) return Math.max(...validPageCounts);
 
   const skuCounts = [];
-  for (const match of decodeHtmlEntities(text).matchAll(/\\?"skuCount\\?"\s*:\s*(\d+)/gi)) {
-    skuCounts.push(Number(match[1]));
+  for (const key of ["skuCount", "orgSkuCount", "resultShowCount", "resultCount"]) {
+    skuCounts.push(...collectMetadataNumbers(text, key));
   }
 
   const validSkuCounts = skuCounts.filter((value) => Number.isInteger(value) && value > 0);
@@ -98,6 +90,8 @@ export function describeSearchPageHtml(html) {
     pageCountMatches: countMatches(text, /pageCount/g),
     escapedPageCountMatches: countMatches(text, /\\"pageCount\\"/g),
     skuCountMatches: countMatches(text, /skuCount/g),
+    orgSkuCountMatches: countMatches(text, /orgSkuCount/g),
+    resultCountMatches: countMatches(text, /resultCount/g),
     hasSearchProductArea: /search_productArea|SearchResult_productList/i.test(text),
     hasCaptchaOrRobotText: /captcha|robot|verify|验证|安全检查|unusual traffic/i.test(text),
     hasGeoRedirectText: /geoRedirect|switch country|切换国家|countrySwitch/i.test(text)
@@ -361,6 +355,24 @@ function parseJson(text) {
   } catch {
     return null;
   }
+}
+
+function collectMetadataNumbers(text, key) {
+  const values = [];
+  const candidates = [
+    String(text || ""),
+    decodeHtmlEntities(text),
+    normalizeScriptText(decodeHtmlEntities(text))
+  ];
+  const pattern = new RegExp(`\\\\*["']${escapeRegExp(key)}\\\\*["']\\s*:\\s*(\\d+)`, "gi");
+
+  for (const candidate of new Set(candidates)) {
+    for (const match of candidate.matchAll(pattern)) {
+      values.push(Number(match[1]));
+    }
+  }
+
+  return values;
 }
 
 function countMatches(text, pattern) {
