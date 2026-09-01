@@ -18,6 +18,7 @@ import { TARGET_PAGES } from "./target-pages.js";
 import { fetchSearchPageHtml } from "./stream-fetch.js";
 import {
   buildPageUrl,
+  describeSearchPageHtml,
   extractMaxPageNumber,
   extractPageCountNumber,
   extractSearchPageObservations,
@@ -410,7 +411,8 @@ function processFetchedPage(state, item, fetched, snapshotCache, seen, missingPr
       detectedPageCount,
       maxPage: item.maxPage,
       partialRead: fetched.page.partialRead,
-      bytesRead: fetched.page.bytesRead
+      bytesRead: fetched.page.bytesRead,
+      diagnostics: describeSearchPageHtml(html)
     }).catch((error) => {
       console.error("Joybuy collector failed to record zero product page", error);
     });

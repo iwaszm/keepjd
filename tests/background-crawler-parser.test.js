@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildPageUrl,
+  describeSearchPageHtml,
   extractMaxPageNumber,
   extractPageCountNumber,
   extractSearchPageObservations,
@@ -35,6 +36,36 @@ test("extractSearchPageObservations reads JSON-LD offer prices from Next scripts
     promo_price: null,
     availability: "unknown",
     captured_at: "2026-08-27"
+  }]);
+});
+
+test("extractSearchPageObservations reads application JSON-LD item lists", () => {
+  const html = `
+    <script type="application/ld+json">{
+      "@context":"https://schema.org",
+      "@type":"ItemList",
+      "numberOfItems":20,
+      "itemListElement":[{
+        "@type":"ListItem",
+        "position":1,
+        "item":{
+          "@type":"Product",
+          "name":"Baseus holder",
+          "url":"https://www.joybuy.de/dp/baseus-holder/102554186",
+          "offers":{"@type":"Offer","price":"2.09","priceCurrency":"EUR","availability":"https://schema.org/InStock"}
+        }
+      }]
+    }</script>
+  `;
+
+  assert.deepEqual(extractSearchPageObservations(html, "2026-09-01"), [{
+    joybuy_product_id: "102554186",
+    title: null,
+    price: 2.09,
+    list_price: null,
+    promo_price: null,
+    availability: "in_stock",
+    captured_at: "2026-09-01"
   }]);
 });
 
@@ -173,6 +204,20 @@ test("extractPageCountNumber ignores local pagination links", () => {
   assert.equal(extractMaxPageNumber(html), 370);
   assert.equal(extractPageCountNumber(html), 370);
   assert.equal(extractPageCountNumber('<a aria-label="Go to page 13" href="/s?b1=4&amp;page=13">13</a>'), null);
+});
+
+test("extractPageCountNumber falls back to search result skuCount", () => {
+  assert.equal(extractPageCountNumber('<div data-exp="{&quot;json_param&quot;:&quot;{\\&quot;skuCount\\&quot;:2891}&quot;}"></div>'), 145);
+});
+
+test("describeSearchPageHtml counts product page signals", () => {
+  const diagnostics = describeSearchPageHtml(`
+    <script type="application/ld+json">{"url":"https://www.joybuy.de/dp/example/102554186","offers":{"priceCurrency":"EUR"}}</script>
+  `);
+
+  assert.equal(diagnostics.jsonLdScripts, 1);
+  assert.equal(diagnostics.productUrlMatches, 1);
+  assert.equal(diagnostics.priceCurrencyMatches, 1);
 });
 
 test("extractMaxPageNumber returns null when pagination is absent", () => {

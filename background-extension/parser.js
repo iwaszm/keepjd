@@ -15,6 +15,7 @@ const SCRIPT_PRICE_KEYS = [
 const PRICE_CONTEXT_BLOCKLIST = /(?:unit|unitPrice|unit_price|basePrice|base_price|referencePrice|reference_price|pricePer|price_per|perPrice|per_price|grundpreis|basispreis|stückpreis|shipping|delivery|freight|tax|vat|discount|coupon|voucher|saving|save|points|installment|threshold)/i;
 const GENERIC_PRICE_CONTEXT_ALLOWLIST = /(?:priceCurrency|offers|itemCommonView|skuId|skuUuid|productId|wareId|Product|ListItem|mainPrice)/i;
 const EURO_PRICE_RE = /€\s*(\d{1,3}(?:[.\s]\d{3})*|\d+)([,.])(\d{2})(?!\d)|(\d{1,3}(?:[.\s]\d{3})*|\d+)([,.])(\d{2})(?!\d)\s*€/;
+const SEARCH_PAGE_SIZE = 20;
 
 export function buildPageUrl(seedUrl, pageNumber) {
   const url = new URL(seedUrl);
@@ -30,7 +31,10 @@ export function pageNumberFromSeed(seedUrl) {
 
 export function extractSearchPageObservations(html, capturedAt = captureDate()) {
   const found = new Map();
-  const scripts = extractNextScripts(html).map(normalizeScriptText);
+  const text = String(html || "");
+  collectFromJsonLdScripts(text, found, capturedAt);
+
+  const scripts = extractNextScripts(text).map(normalizeScriptText);
 
   for (const text of scripts) {
     collectFromProductUrls(text, found, capturedAt);
@@ -72,7 +76,32 @@ export function extractPageCountNumber(html) {
   }
 
   const validPageCounts = pageCounts.filter((value) => Number.isInteger(value) && value > 0);
-  return validPageCounts.length ? Math.max(...validPageCounts) : null;
+  if (validPageCounts.length) return Math.max(...validPageCounts);
+
+  const skuCounts = [];
+  for (const match of decodeHtmlEntities(text).matchAll(/\\?"skuCount\\?"\s*:\s*(\d+)/gi)) {
+    skuCounts.push(Number(match[1]));
+  }
+
+  const validSkuCounts = skuCounts.filter((value) => Number.isInteger(value) && value > 0);
+  return validSkuCounts.length ? Math.ceil(Math.max(...validSkuCounts) / SEARCH_PAGE_SIZE) : null;
+}
+
+export function describeSearchPageHtml(html) {
+  const text = String(html || "");
+  return {
+    htmlLength: text.length,
+    nextScriptMarkers: countMatches(text, /self\.__next_[sf]/g),
+    jsonLdScripts: countMatches(text, /application\/ld\+json/gi),
+    productUrlMatches: countMatches(text, /\/dp\//g),
+    priceCurrencyMatches: countMatches(text, /priceCurrency/g),
+    pageCountMatches: countMatches(text, /pageCount/g),
+    escapedPageCountMatches: countMatches(text, /\\"pageCount\\"/g),
+    skuCountMatches: countMatches(text, /skuCount/g),
+    hasSearchProductArea: /search_productArea|SearchResult_productList/i.test(text),
+    hasCaptchaOrRobotText: /captcha|robot|verify|验证|安全检查|unusual traffic/i.test(text),
+    hasGeoRedirectText: /geoRedirect|switch country|切换国家|countrySwitch/i.test(text)
+  };
 }
 
 function extractNextScripts(html) {
@@ -100,6 +129,54 @@ function extractNextScripts(html) {
   }
 
   return scripts;
+}
+
+function extractJsonLdScripts(html) {
+  const scripts = [];
+  const pattern = /<script\b(?=[^>]*type=["']application\/ld\+json["'])[^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = pattern.exec(html))) {
+    scripts.push(decodeHtmlEntities(match[1] || ""));
+  }
+  return scripts;
+}
+
+function collectFromJsonLdScripts(html, found, capturedAt) {
+  for (const scriptText of extractJsonLdScripts(html)) {
+    const parsed = parseJson(scriptText);
+    if (parsed !== null) collectFromJsonLdNode(parsed, found, capturedAt);
+  }
+}
+
+function collectFromJsonLdNode(node, found, capturedAt) {
+  if (Array.isArray(node)) {
+    for (const item of node) collectFromJsonLdNode(item, found, capturedAt);
+    return;
+  }
+
+  if (!node || typeof node !== "object") return;
+
+  const type = Array.isArray(node["@type"]) ? node["@type"].join(" ") : String(node["@type"] || "");
+  if (/\bProduct\b/i.test(type)) {
+    collectFromJsonLdProduct(node, found, capturedAt);
+  }
+
+  if (Array.isArray(node.itemListElement)) {
+    for (const element of node.itemListElement) {
+      collectFromJsonLdNode(element?.item || element, found, capturedAt);
+    }
+  }
+}
+
+function collectFromJsonLdProduct(product, found, capturedAt) {
+  const id = extractProductIdFromUrlText(product.url || "");
+  if (!id || found.has(id)) return;
+
+  const offer = Array.isArray(product.offers) ? product.offers[0] : product.offers;
+  const price = parseNumericPrice(offer?.price);
+  if (!isPlausibleProductPrice(price)) return;
+
+  found.set(id, buildObservation(id, price, capturedAt, normalizeAvailability(offer?.availability)));
 }
 
 function isCandidateProductScript(text) {
@@ -209,8 +286,13 @@ function extractJsonLdAvailability(text) {
   const value = String(text || "")
     .replace(/\\\//g, "/")
     .match(/"availability"\s*:\s*"https:\/\/schema\.org\/(InStock|OutOfStock)"/i)?.[1];
-  if (/^InStock$/i.test(value || "")) return "in_stock";
-  if (/^OutOfStock$/i.test(value || "")) return "out_of_stock";
+  return normalizeAvailability(value);
+}
+
+function normalizeAvailability(value) {
+  const text = String(value || "").replace(/\\\//g, "/");
+  if (/InStock$/i.test(text)) return "in_stock";
+  if (/OutOfStock$/i.test(text)) return "out_of_stock";
   return "unknown";
 }
 
@@ -261,6 +343,28 @@ function normalizeScriptText(text) {
     .replace(/\\"/g, "\"")
     .replace(/\\'/g, "'")
     .replace(/\\\\/g, "\\");
+}
+
+function decodeHtmlEntities(text) {
+  return String(text || "")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#34;/g, "\"")
+    .replace(/&#x22;/gi, "\"")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function parseJson(text) {
+  try {
+    return JSON.parse(String(text || "").trim());
+  } catch {
+    return null;
+  }
+}
+
+function countMatches(text, pattern) {
+  return (String(text || "").match(pattern) || []).length;
 }
 
 function surroundingText(text, index, before, after) {
