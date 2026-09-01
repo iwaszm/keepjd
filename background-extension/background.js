@@ -19,6 +19,7 @@ import { fetchSearchPageHtml } from "./stream-fetch.js";
 import {
   buildPageUrl,
   extractMaxPageNumber,
+  extractPageCountNumber,
   extractSearchPageObservations,
   pageNumberFromSeed
 } from "./parser.js";
@@ -362,10 +363,15 @@ async function collectPages(state, item, snapshotCache, pageCount) {
 function processFetchedPage(state, item, fetched, snapshotCache, seen, missingPricePointProductIds) {
   const html = fetched.page.html;
   const detectedMaxPage = extractMaxPageNumber(html);
-  if (detectedMaxPage !== null) {
+  const detectedPageCount = extractPageCountNumber(html);
+  if (detectedPageCount !== null) {
+    item.detectedMaxPage = detectedPageCount;
+    item.maxPageDetected = true;
+    item.maxPage = detectedPageCount;
+  } else if (!item.configuredMaxPage && detectedMaxPage !== null) {
     item.detectedMaxPage = detectedMaxPage;
     item.maxPageDetected = true;
-    item.maxPage = detectedMaxPage;
+    item.maxPage = Math.max(item.maxPage, detectedMaxPage);
   }
 
   const observations = extractSearchPageObservations(html);
@@ -401,6 +407,7 @@ function processFetchedPage(state, item, fetched, snapshotCache, seen, missingPr
       targetLabel: item.targetLabel,
       targetUrl: item.targetUrl,
       detectedMaxPage,
+      detectedPageCount,
       maxPage: item.maxPage,
       partialRead: fetched.page.partialRead,
       bytesRead: fetched.page.bytesRead
@@ -435,6 +442,7 @@ function processFetchedPage(state, item, fetched, snapshotCache, seen, missingPr
     bytesRead: fetched.page.bytesRead,
     targetIndex: item.targetIndex,
     detectedMaxPage,
+    detectedPageCount,
     maxPage: item.maxPage,
     nextPage: item.nextPage,
     observations: observations.length,

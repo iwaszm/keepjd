@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildPageUrl,
   extractMaxPageNumber,
+  extractPageCountNumber,
   extractSearchPageObservations,
   pageNumberFromSeed
 } from "../background-extension/parser.js";
@@ -159,6 +160,19 @@ test("extractMaxPageNumber reads plain and escaped pageCount metadata", () => {
     extractMaxPageNumber('<script>(self.__next_s=self.__next_s||[]).push([0,{"children":"{\\"pageCount\\":49,\\"pageIndex\\":1,\\"pageSize\\":20}"}])</script>'),
     49
   );
+});
+
+test("extractPageCountNumber ignores local pagination links", () => {
+  const html = `
+    <nav>
+      <a aria-label="Go to page 13" href="/s?b1=4&amp;page=13">13</a>
+    </nav>
+    <script>{"pageCount":370,"pageIndex":1,"pageSize":20}</script>
+  `;
+
+  assert.equal(extractMaxPageNumber(html), 370);
+  assert.equal(extractPageCountNumber(html), 370);
+  assert.equal(extractPageCountNumber('<a aria-label="Go to page 13" href="/s?b1=4&amp;page=13">13</a>'), null);
 });
 
 test("extractMaxPageNumber returns null when pagination is absent", () => {

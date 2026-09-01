@@ -52,16 +52,27 @@ export function extractMaxPageNumber(html) {
     pageNumbers.push(Number(match[1]));
   }
 
-  for (const match of text.matchAll(/["']pageCount["']\s*:\s*(\d+)/gi)) {
-    pageNumbers.push(Number(match[1]));
-  }
-
-  for (const match of text.matchAll(/\\["']pageCount\\["']\s*:\s*(\d+)/gi)) {
-    pageNumbers.push(Number(match[1]));
-  }
+  const pageCount = extractPageCountNumber(text);
+  if (pageCount !== null) pageNumbers.push(pageCount);
 
   const validPageNumbers = pageNumbers.filter((value) => Number.isInteger(value) && value > 0);
   return validPageNumbers.length ? Math.max(...validPageNumbers) : null;
+}
+
+export function extractPageCountNumber(html) {
+  const pageCounts = [];
+  const text = String(html || "");
+
+  for (const match of text.matchAll(/["']pageCount["']\s*:\s*(\d+)/gi)) {
+    pageCounts.push(Number(match[1]));
+  }
+
+  for (const match of text.matchAll(/\\["']pageCount\\["']\s*:\s*(\d+)/gi)) {
+    pageCounts.push(Number(match[1]));
+  }
+
+  const validPageCounts = pageCounts.filter((value) => Number.isInteger(value) && value > 0);
+  return validPageCounts.length ? Math.max(...validPageCounts) : null;
 }
 
 function extractNextScripts(html) {
