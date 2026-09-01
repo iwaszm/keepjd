@@ -27,10 +27,13 @@ const ALARM_NAME = "joybuy-background-page-collector";
 const STORAGE_KEY = "joybuyBackgroundCollectorState";
 const SNAPSHOT_CACHE_KEY = "joybuyBackgroundCollectorSnapshots";
 const PENDING_OBSERVATIONS_KEY = "joybuyBackgroundCollectorPendingObservations";
+const FAILED_PAGES_KEY = "joybuyBackgroundCollectorFailedPages";
+const MAX_FAILED_PAGE_RECORDS = 1000;
 const OBSERVE_BATCH_URL = `${API_BASE_URL}/products/observe-batch`;
 const MISSING_PRICE_POINTS_URL = `${API_BASE_URL}/products/missing-price-points?limit=10000`;
 const activeFetchControllers = new Set();
 let pauseAbortRequested = false;
+let failedPageRecordChain = Promise.resolve();
 
 console.info("Joybuy background collector service worker loaded");
 
@@ -102,6 +105,7 @@ async function startCollection(reason) {
   pauseAbortRequested = false;
   const pending = await loadPendingObservations();
   const missingPricePointProductIds = await fetchMissingPricePointProductIds();
+  await saveFailedPageRecords([]);
   await setBadge("RUN", "#2563eb");
   const startedAt = new Date().toISOString();
   const queue = TARGET_PAGES.map((target, index) => {
@@ -111,6 +115,7 @@ async function startCollection(reason) {
       targetIndex: index + 1,
       targetUrl: normalizedTarget.url,
       targetLabel: normalizedTarget.label,
+      startPage,
       nextPage: startPage,
       maxPage: normalizedTarget.maxPage ?? startPage + MAX_PAGES_PER_TARGET - 1,
       configuredMaxPage: normalizedTarget.maxPage ?? null,
@@ -136,6 +141,7 @@ async function startCollection(reason) {
       observationsPosted: 0,
       partialReads: 0,
       uploadingObservations: 0,
+      zeroProductPages: 0,
       missingPricePointBackfillRemaining: missingPricePointProductIds.length,
       observationsBuffered: pending.length,
       observationsSkipped: 0,
@@ -172,7 +178,8 @@ async function processQueue() {
       return;
     }
 
-    const pageCount = Math.min(PAGE_FETCH_CONCURRENCY, pagesLeft);
+    const needsFullFirstPageForPageCount = !item.maxPageDetected && (item.pagesFetched || 0) === 0;
+    const pageCount = needsFullFirstPageForPageCount ? 1 : Math.min(PAGE_FETCH_CONCURRENCY, pagesLeft);
     const result = await collectPages(state, item, snapshotCache, pageCount);
     snapshotDirty = snapshotDirty || result.snapshotDirty;
     state.updatedAt = new Date().toISOString();
@@ -278,7 +285,8 @@ async function collectPages(state, item, snapshotCache, pageCount) {
     }, PAGE_FETCH_TIMEOUT_MS);
     activeFetchControllers.add(controller);
     try {
-      const page = await fetchSearchPageHtml(pageUrl, Boolean(item.configuredMaxPage), { signal: controller.signal });
+      const needsPageCount = !item.maxPageDetected && pageNumber === (item.startPage || 1);
+      const page = await fetchSearchPageHtml(pageUrl, !needsPageCount, { signal: controller.signal });
       return { ok: true, pageNumber, pageUrl, page };
     } catch (error) {
       if (pauseAbortRequested) return { ok: false, paused: true, pageNumber, pageUrl, error };
@@ -357,9 +365,7 @@ function processFetchedPage(state, item, fetched, snapshotCache, seen, missingPr
   if (detectedMaxPage !== null) {
     item.detectedMaxPage = detectedMaxPage;
     item.maxPageDetected = true;
-    if (!item.configuredMaxPage) {
-      item.maxPage = Math.max(item.maxPage, detectedMaxPage);
-    }
+    item.maxPage = detectedMaxPage;
   }
 
   const observations = extractSearchPageObservations(html);
@@ -381,6 +387,27 @@ function processFetchedPage(state, item, fetched, snapshotCache, seen, missingPr
   }
 
   item.emptyPages = observations.length ? 0 : (item.emptyPages || 0) + 1;
+  if (!observations.length) {
+    state.totals.zeroProductPages = (state.totals.zeroProductPages || 0) + 1;
+    state.totals.observationsFailed += 1;
+    item.zeroProductPages = (item.zeroProductPages || 0) + 1;
+    item.lastZeroProductPageUrl = fetched.pageUrl;
+    state.lastZeroProductPageUrl = fetched.pageUrl;
+    recordFailedPage({
+      reason: "zero_products",
+      pageUrl: fetched.pageUrl,
+      pageNumber: fetched.pageNumber,
+      targetIndex: item.targetIndex,
+      targetLabel: item.targetLabel,
+      targetUrl: item.targetUrl,
+      detectedMaxPage,
+      maxPage: item.maxPage,
+      partialRead: fetched.page.partialRead,
+      bytesRead: fetched.page.bytesRead
+    }).catch((error) => {
+      console.error("Joybuy collector failed to record zero product page", error);
+    });
+  }
   item.lastPageUrl = fetched.pageUrl;
   item.lastPagePartialRead = fetched.page.partialRead;
   item.lastPageBytesRead = fetched.page.bytesRead;
@@ -424,6 +451,18 @@ function handlePageError(state, item, pageUrl, pageNumber, error) {
   item.lastError = `${pageUrl}: ${error.message}`;
   state.lastError = item.lastError;
   state.totals.observationsFailed += 1;
+  recordFailedPage({
+    reason: "fetch_error",
+    pageUrl,
+    pageNumber,
+    targetIndex: item.targetIndex,
+    targetLabel: item.targetLabel,
+    targetUrl: item.targetUrl,
+    maxPage: item.maxPage,
+    error: error.message
+  }).catch((recordError) => {
+    console.error("Joybuy collector failed to record failed page", recordError);
+  });
   item.retryCount = (item.retryCount || 0) + 1;
   if (item.retryCount > MAX_PAGE_RETRIES) {
     item.lastSkippedPageUrl = pageUrl;
@@ -497,6 +536,7 @@ async function setIdleStatus(reason) {
       observationsBuffered: 0,
       partialReads: 0,
       uploadingObservations: 0,
+      zeroProductPages: 0,
       missingPricePointBackfillRemaining: 0,
       observationsSkipped: 0,
       observationsFailed: 0,
@@ -514,8 +554,11 @@ async function loadState() {
 async function loadStateWithPendingCount() {
   const state = await loadState();
   const pending = await loadPendingObservations();
+  const failedPages = await loadFailedPageRecords();
   state.totals = state.totals || {};
   state.totals.observationsBuffered = pending.length;
+  state.totals.failedPageRecords = failedPages.length;
+  state.recentFailedPages = failedPages.slice(-10);
   return state;
 }
 
@@ -614,6 +657,28 @@ async function savePendingObservations(observations) {
   await chrome.storage.local.set({ [PENDING_OBSERVATIONS_KEY]: observations });
 }
 
+async function loadFailedPageRecords() {
+  const data = await chrome.storage.local.get(FAILED_PAGES_KEY);
+  return Array.isArray(data[FAILED_PAGES_KEY]) ? data[FAILED_PAGES_KEY] : [];
+}
+
+async function saveFailedPageRecords(records) {
+  await chrome.storage.local.set({ [FAILED_PAGES_KEY]: records });
+}
+
+async function recordFailedPage(record) {
+  failedPageRecordChain = failedPageRecordChain.catch(() => null).then(async () => {
+    const records = await loadFailedPageRecords();
+    records.push({
+      capturedAt: new Date().toISOString(),
+      ...record
+    });
+    const trimmedRecords = records.slice(-MAX_FAILED_PAGE_RECORDS);
+    await saveFailedPageRecords(trimmedRecords);
+  });
+  return failedPageRecordChain;
+}
+
 async function saveProgressState(state) {
   const latest = await loadState();
   if (latest.paused) {
@@ -701,18 +766,22 @@ function normalizeState(state) {
     ...(state.totals || {}),
     partialReads: state.totals?.partialReads ?? 0,
     uploadingObservations: state.totals?.uploadingObservations ?? 0,
+    zeroProductPages: state.totals?.zeroProductPages ?? 0,
     missingPricePointBackfillRemaining: state.totals?.missingPricePointBackfillRemaining ?? (state.missingPricePointProductIds || []).length,
-    observationsBuffered: state.totals?.observationsBuffered ?? 0
+    observationsBuffered: state.totals?.observationsBuffered ?? 0,
+    observationsFailed: state.totals?.observationsFailed ?? 0
   };
 
   state.queue = state.queue.map((item) => ({
     ...item,
+    startPage: item.startPage ?? pageNumberFromSeed(item.targetUrl),
     configuredMaxPage: item.configuredMaxPage ?? null,
     emptyPages: item.emptyPages ?? item.emptyOrDuplicatePages ?? 0,
     pagesFetched: item.pagesFetched ?? 0,
     observationsFound: item.observationsFound ?? 0,
     observationsPosted: item.observationsPosted ?? 0,
-    observationsSkipped: item.observationsSkipped ?? 0
+    observationsSkipped: item.observationsSkipped ?? 0,
+    zeroProductPages: item.zeroProductPages ?? 0
   }));
   return state;
 }

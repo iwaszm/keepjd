@@ -12,7 +12,7 @@ export const TARGET_PAGES = [
 ];
 ```
 
-Each target is treated as a paginated listing URL. The collector processes targets in order. When `maxPage` is set, it fetches every page up to that configured maximum before moving to the next target. This is preferred for Joybuy category pages because the rendered pagination can expose only a local page window such as pages 1-7, not the real category maximum.
+Each target is treated as a paginated listing URL. The collector processes targets in order. The first page of each target is read fully so the page can expose its own `pageCount` metadata. When detected, that page count becomes the target limit; the configured `maxPage` is only a fallback for pages where Joybuy does not expose usable pagination metadata.
 
 String targets are still supported as a fallback. For those, the collector uses `MAX_PAGES_PER_TARGET` and any detected pagination numbers as hints.
 
@@ -26,6 +26,12 @@ String targets are still supported as a fallback. For those, the collector uses 
 6. Click `Start collection`.
 
 Progress is shown in the popup, stored in Chrome extension local storage under `joybuyBackgroundCollectorState`, and logged to the extension service worker console.
+
+Pages that fail to fetch or return zero products are stored under `joybuyBackgroundCollectorFailedPages` for local debugging. In the service worker console, run:
+
+```js
+chrome.storage.local.get("joybuyBackgroundCollectorFailedPages").then(console.log);
+```
 
 ## Behavior
 

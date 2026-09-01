@@ -10,6 +10,7 @@ const uploadingNode = document.getElementById("uploading");
 const partialNode = document.getElementById("partial");
 const backfillNode = document.getElementById("backfill");
 const skippedNode = document.getElementById("skipped");
+const zeroNode = document.getElementById("zero");
 const failedNode = document.getElementById("failed");
 const targetNode = document.getElementById("target");
 const pageNode = document.getElementById("page");
@@ -52,6 +53,7 @@ async function refreshState() {
   partialNode.textContent = totals.partialReads || 0;
   backfillNode.textContent = totals.missingPricePointBackfillRemaining || 0;
   skippedNode.textContent = totals.observationsSkipped || 0;
+  zeroNode.textContent = totals.zeroProductPages || 0;
   failedNode.textContent = totals.observationsFailed || 0;
   targetNode.textContent = targetText(state, queue, activeTarget);
   pageNode.textContent = activeTarget ? `${activeTarget.nextPage}/${activeTarget.detectedMaxPage || activeTarget.maxPage}` : "-";
