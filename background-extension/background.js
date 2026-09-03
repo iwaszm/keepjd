@@ -309,6 +309,7 @@ async function collectPages(state, item, snapshotCache, pageCount) {
   const missingPricePointProductIds = new Set(state.missingPricePointProductIds || []);
   const observationsToPost = [];
   let skippedCountTotal = 0;
+  let pageErrorHit = false;
 
   for (const fetched of fetchedPages) {
     if (fetched.paused) {
@@ -317,7 +318,8 @@ async function collectPages(state, item, snapshotCache, pageCount) {
 
     if (!fetched.ok) {
       handlePageError(state, item, fetched.pageUrl, fetched.pageNumber, fetched.error);
-      return { didProcessPage: false, pagesProcessed, snapshotDirty };
+      pageErrorHit = true;
+      break;
     }
 
     const pageResult = processFetchedPage(state, item, fetched, snapshotCache, seen, missingPricePointProductIds);
@@ -325,6 +327,10 @@ async function collectPages(state, item, snapshotCache, pageCount) {
     snapshotDirty = snapshotDirty || pageResult.snapshotDirty;
     skippedCountTotal += pageResult.skippedCount;
     observationsToPost.push(...pageResult.observationsToPost);
+
+    if (pageResult.shouldPause) {
+      break;
+    }
 
     if (!item.maxPageDetected && item.emptyPages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
       break;
@@ -353,6 +359,14 @@ async function collectPages(state, item, snapshotCache, pageCount) {
   item.lastBatchSkippedObservationCount = skippedCountTotal;
   state.missingPricePointProductIds = [...missingPricePointProductIds];
   state.totals.missingPricePointBackfillRemaining = missingPricePointProductIds.size;
+
+  if (state.paused) {
+    return { didProcessPage: true, pagesProcessed, snapshotDirty };
+  }
+
+  if (pageErrorHit) {
+    return { didProcessPage: false, pagesProcessed, snapshotDirty };
+  }
 
   if (!item.maxPageDetected && item.emptyPages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
     const finalPostedCount = await flushPendingObservations(state);
@@ -407,8 +421,9 @@ function processFetchedPage(state, item, fetched, snapshotCache, seen, missingPr
     item.lastZeroProductPageUrl = fetched.pageUrl;
     state.lastZeroProductPageUrl = fetched.pageUrl;
     const diagnostics = describeSearchPageHtml(html);
-    if (diagnostics.hasForbiddenText || diagnostics.hasCaptchaOrRobotText) {
+    if (diagnostics.hasForbiddenText) {
       item.forbiddenPages = (item.forbiddenPages || 0) + 1;
+      autoPauseCollection(state, item, `auto paused after forbidden page: ${fetched.pageUrl}`);
     }
     recordFailedPage({
       reason: "zero_products",
@@ -464,7 +479,12 @@ function processFetchedPage(state, item, fetched, snapshotCache, seen, missingPr
     totals: state.totals
   });
 
-  return { observationsToPost, skippedCount, snapshotDirty: freshObservations.length > 0 };
+  return {
+    observationsToPost,
+    skippedCount,
+    shouldPause: state.paused,
+    snapshotDirty: freshObservations.length > 0
+  };
 }
 
 function handlePageError(state, item, pageUrl, pageNumber, error) {
@@ -473,6 +493,7 @@ function handlePageError(state, item, pageUrl, pageNumber, error) {
   state.totals.observationsFailed += 1;
   if (/\bHTTP 403\b/i.test(error.message)) {
     item.forbiddenPages = (item.forbiddenPages || 0) + 1;
+    autoPauseCollection(state, item, `auto paused after HTTP 403: ${pageUrl}`);
   }
   recordFailedPage({
     reason: "fetch_error",
@@ -486,6 +507,10 @@ function handlePageError(state, item, pageUrl, pageNumber, error) {
   }).catch((recordError) => {
     console.error("Joybuy collector failed to record failed page", recordError);
   });
+  if (state.paused) {
+    console.error("Joybuy collector page failed", item.lastError);
+    return;
+  }
   item.retryCount = (item.retryCount || 0) + 1;
   if (item.retryCount > MAX_PAGE_RETRIES) {
     item.lastSkippedPageUrl = pageUrl;
@@ -500,6 +525,24 @@ function handlePageError(state, item, pageUrl, pageNumber, error) {
     console.error("Joybuy collector badge update failed", badgeError);
   });
   console.error("Joybuy collector page failed", item.lastError);
+}
+
+function autoPauseCollection(state, item, message) {
+  const now = new Date().toISOString();
+  pauseAbortRequested = true;
+  abortActiveFetches();
+  state.running = false;
+  state.paused = true;
+  state.pausedAt = now;
+  state.updatedAt = now;
+  state.autoPausedAt = now;
+  state.autoPauseReason = "forbidden";
+  state.lastError = message;
+  item.retryAfter = null;
+  item.lastError = message;
+  setBadge("403", "#b91c1c").catch((badgeError) => {
+    console.error("Joybuy collector badge update failed", badgeError);
+  });
 }
 
 async function postObservations(observations) {
