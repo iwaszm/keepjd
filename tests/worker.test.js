@@ -218,12 +218,57 @@ test("POST /products/observe-batch reports invalid observations", async () => {
   });
 });
 
+test("POST /collector/target-summary records latest category stats", async () => {
+  const db = new FakeD1();
+  const payload = {
+    run_started_at: "2026-09-03T07:00:00.000Z",
+    run_finished_at: "2026-09-03T07:05:00.000Z",
+    target_index: 4,
+    original_target_index: 25,
+    label: "汽车用品配件",
+    url: "https://www.joybuy.de/s?b1=8596",
+    configured_max_page: 127,
+    latest_max_page: 145,
+    pages_fetched: 145,
+    zero_product_pages: 3,
+    forbidden_pages: 3,
+    items_found: 2882,
+    posted: 200,
+    skipped: 2682,
+    done_reason: "max_page_reached",
+    last_page: "https://www.joybuy.de/s?b1=8596&page=145",
+    last_error: null
+  };
+
+  const post = await handleRequest(new Request("https://api.example.test/collector/target-summary", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  }), { DB: db });
+
+  assert.equal(post.status, 200);
+  assert.deepEqual(await post.json(), { ok: true });
+
+  const latest = await handleRequest(new Request("https://api.example.test/collector/targets/latest"), { DB: db });
+  assert.equal(latest.status, 200);
+  const body = await latest.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.targets.length, 1);
+  assert.equal(body.targets[0].url, payload.url);
+  assert.equal(body.targets[0].latest_max_page, 145);
+  assert.equal(body.targets[0].forbidden_pages, 3);
+  assert.equal(body.targets[0].items_found, 2882);
+  assert.equal(body.targets[0].posted, 200);
+  assert.equal(body.targets[0].skipped, 2682);
+});
+
 class FakeD1 {
   constructor() {
     this.products = [];
     this.pricePoints = [];
+    this.collectorTargetStats = [];
     this.nextProductId = 1;
     this.nextPricePointId = 1;
+    this.nextCollectorTargetStatId = 1;
   }
 
   prepare(sql) {
@@ -257,6 +302,17 @@ class FakeStatement {
   }
 
   async all() {
+    if (/FROM collector_target_stats s/i.test(this.sql)) {
+      const latestByUrl = new Map();
+      for (const item of this.db.collectorTargetStats) {
+        const previous = latestByUrl.get(item.url);
+        if (!previous || item.id > previous.id) latestByUrl.set(item.url, item);
+      }
+      const results = [...latestByUrl.values()]
+        .sort((a, b) => (a.original_target_index ?? a.target_index ?? a.id) - (b.original_target_index ?? b.target_index ?? b.id));
+      return { results };
+    }
+
     if (/FROM products p\s+LEFT JOIN price_points pp ON pp\.product_id = p\.id/i.test(this.sql)) {
       const [limit] = this.values;
       const results = this.db.products
@@ -332,6 +388,49 @@ class FakeStatement {
       point.list_price = null;
       point.promo_price = null;
       if (availability !== "unknown") point.availability = availability;
+      return {};
+    }
+
+    if (/INSERT INTO collector_target_stats/i.test(this.sql)) {
+      const [
+        runStartedAt,
+        runFinishedAt,
+        targetIndex,
+        originalTargetIndex,
+        label,
+        url,
+        configuredMaxPage,
+        latestMaxPage,
+        pagesFetched,
+        zeroProductPages,
+        forbiddenPages,
+        itemsFound,
+        posted,
+        skipped,
+        doneReason,
+        lastPage,
+        lastError
+      ] = this.values;
+      this.db.collectorTargetStats.push({
+        id: this.db.nextCollectorTargetStatId++,
+        run_started_at: runStartedAt,
+        run_finished_at: runFinishedAt,
+        target_index: targetIndex,
+        original_target_index: originalTargetIndex,
+        label,
+        url,
+        configured_max_page: configuredMaxPage,
+        latest_max_page: latestMaxPage,
+        pages_fetched: pagesFetched,
+        zero_product_pages: zeroProductPages,
+        forbidden_pages: forbiddenPages,
+        items_found: itemsFound,
+        posted,
+        skipped,
+        done_reason: doneReason,
+        last_page: lastPage,
+        last_error: lastError
+      });
       return {};
     }
 

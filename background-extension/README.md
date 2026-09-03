@@ -12,7 +12,7 @@ export const TARGET_PAGES = [
 ];
 ```
 
-Each target is treated as a paginated listing URL. The collector processes targets in order. The first page of each target is read fully so the page can expose its own `pageCount` metadata. When detected, that page count becomes the target limit; the configured `maxPage` is only a fallback for pages where Joybuy does not expose usable `pageCount` metadata. Ordinary pagination links such as `Go to page 13` are not trusted as the target limit because Joybuy can render only a local pagination window.
+Each target is treated as a paginated listing URL. The collector randomizes target order on every new start so the same category is not always collected last. The first page of each target is read fully so the page can expose its own `pageCount` metadata. When detected, that page count becomes the target limit; the configured `maxPage` is only a fallback for pages where Joybuy does not expose usable `pageCount` metadata. Ordinary pagination links such as `Go to page 13` are not trusted as the target limit because Joybuy can render only a local pagination window.
 
 String targets are still supported as a fallback. For those, the collector uses `MAX_PAGES_PER_TARGET` and any detected pagination numbers as hints.
 
@@ -39,4 +39,5 @@ chrome.storage.local.get("joybuyBackgroundCollectorFailedPages").then(console.lo
 - Parses only page HTML scripts containing `self.__next_s`, `self.__next_f`, product URLs, SKU IDs, or price fields.
 - Extracts product IDs and prices from product-local script windows.
 - Posts observations to `https://joybuy-price-history.zhangmeng43.workers.dev/products/observe`.
+- Posts one D1 target summary after each target finishes, including latest max page, zero/forbidden page counts, found items, posted count, and skipped count.
 - Does not open listing tabs and does not click through product pages.

@@ -94,6 +94,7 @@ export function describeSearchPageHtml(html) {
     resultCountMatches: countMatches(text, /resultCount/g),
     hasSearchProductArea: /search_productArea|SearchResult_productList/i.test(text),
     hasCaptchaOrRobotText: /captcha|robot|verify|验证|安全检查|unusual traffic/i.test(text),
+    hasForbiddenText: /(?:\b403\b|forbidden|access denied|访问被拒绝|拒绝访问)/i.test(text),
     hasGeoRedirectText: /geoRedirect|switch country|切换国家|countrySwitch/i.test(text)
   };
 }

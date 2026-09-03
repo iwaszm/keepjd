@@ -32,6 +32,7 @@ const PENDING_OBSERVATIONS_KEY = "joybuyBackgroundCollectorPendingObservations";
 const FAILED_PAGES_KEY = "joybuyBackgroundCollectorFailedPages";
 const MAX_FAILED_PAGE_RECORDS = 1000;
 const OBSERVE_BATCH_URL = `${API_BASE_URL}/products/observe-batch`;
+const TARGET_SUMMARY_URL = `${API_BASE_URL}/collector/target-summary`;
 const MISSING_PRICE_POINTS_URL = `${API_BASE_URL}/products/missing-price-points?limit=10000`;
 const activeFetchControllers = new Set();
 let pauseAbortRequested = false;
@@ -110,11 +111,12 @@ async function startCollection(reason) {
   await saveFailedPageRecords([]);
   await setBadge("RUN", "#2563eb");
   const startedAt = new Date().toISOString();
-  const queue = TARGET_PAGES.map((target, index) => {
-    const normalizedTarget = normalizeTarget(target);
+  const queue = shuffleTargets(TARGET_PAGES).map((entry, index) => {
+    const normalizedTarget = normalizeTarget(entry.target);
     const startPage = pageNumberFromSeed(normalizedTarget.url);
     return {
       targetIndex: index + 1,
+      originalTargetIndex: entry.originalIndex + 1,
       targetUrl: normalizedTarget.url,
       targetLabel: normalizedTarget.label,
       startPage,
@@ -127,6 +129,8 @@ async function startCollection(reason) {
       observationsFound: 0,
       observationsPosted: 0,
       observationsSkipped: 0,
+      forbiddenPages: 0,
+      zeroProductPages: 0,
       done: false
     };
   });
@@ -257,7 +261,7 @@ function abortActiveFetches() {
 
 async function collectPages(state, item, snapshotCache, pageCount) {
   if (item.nextPage > item.maxPage) {
-    markTargetDone(state, item, "max_page_reached");
+    await markTargetDone(state, item, "max_page_reached");
     return { didProcessPage: true, pagesProcessed: 0, snapshotDirty: false };
   }
 
@@ -351,11 +355,13 @@ async function collectPages(state, item, snapshotCache, pageCount) {
   state.totals.missingPricePointBackfillRemaining = missingPricePointProductIds.size;
 
   if (!item.maxPageDetected && item.emptyPages >= STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES) {
-    await flushPendingObservations(state);
-    markTargetDone(state, item, "empty_page_stop");
+    const finalPostedCount = await flushPendingObservations(state);
+    item.observationsPosted = (item.observationsPosted || 0) + finalPostedCount;
+    await markTargetDone(state, item, "empty_page_stop");
   } else if (item.nextPage > item.maxPage) {
-    await flushPendingObservations(state);
-    markTargetDone(state, item, "max_page_reached");
+    const finalPostedCount = await flushPendingObservations(state);
+    item.observationsPosted = (item.observationsPosted || 0) + finalPostedCount;
+    await markTargetDone(state, item, "max_page_reached");
   }
 
   return { didProcessPage: true, pagesProcessed, snapshotDirty };
@@ -400,6 +406,10 @@ function processFetchedPage(state, item, fetched, snapshotCache, seen, missingPr
     item.zeroProductPages = (item.zeroProductPages || 0) + 1;
     item.lastZeroProductPageUrl = fetched.pageUrl;
     state.lastZeroProductPageUrl = fetched.pageUrl;
+    const diagnostics = describeSearchPageHtml(html);
+    if (diagnostics.hasForbiddenText || diagnostics.hasCaptchaOrRobotText) {
+      item.forbiddenPages = (item.forbiddenPages || 0) + 1;
+    }
     recordFailedPage({
       reason: "zero_products",
       pageUrl: fetched.pageUrl,
@@ -412,7 +422,7 @@ function processFetchedPage(state, item, fetched, snapshotCache, seen, missingPr
       maxPage: item.maxPage,
       partialRead: fetched.page.partialRead,
       bytesRead: fetched.page.bytesRead,
-      diagnostics: describeSearchPageHtml(html)
+      diagnostics
     }).catch((error) => {
       console.error("Joybuy collector failed to record zero product page", error);
     });
@@ -461,6 +471,9 @@ function handlePageError(state, item, pageUrl, pageNumber, error) {
   item.lastError = `${pageUrl}: ${error.message}`;
   state.lastError = item.lastError;
   state.totals.observationsFailed += 1;
+  if (/\bHTTP 403\b/i.test(error.message)) {
+    item.forbiddenPages = (item.forbiddenPages || 0) + 1;
+  }
   recordFailedPage({
     reason: "fetch_error",
     pageUrl,
@@ -522,12 +535,50 @@ async function postObservationChunk(observations) {
   return body.inserted ?? observations.length;
 }
 
-function markTargetDone(state, item, reason) {
+async function reportTargetSummary(state, item) {
+  const payload = {
+    run_started_at: state.startedAt,
+    run_finished_at: state.finishedAt || item.doneAt || new Date().toISOString(),
+    target_index: item.targetIndex,
+    original_target_index: item.originalTargetIndex ?? item.targetIndex,
+    label: item.targetLabel || "",
+    url: item.targetUrl,
+    configured_max_page: item.configuredMaxPage,
+    latest_max_page: item.detectedMaxPage || item.maxPage || null,
+    pages_fetched: item.pagesFetched || 0,
+    zero_product_pages: item.zeroProductPages || 0,
+    forbidden_pages: item.forbiddenPages || 0,
+    items_found: item.observationsFound || 0,
+    posted: item.observationsPosted || 0,
+    skipped: item.observationsSkipped || 0,
+    done_reason: item.doneReason || "",
+    last_page: item.lastPageUrl || null,
+    last_error: item.lastError || null
+  };
+
+  try {
+    const response = await fetch(TARGET_SUMMARY_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const body = await response.json().catch(() => null);
+    if (!body?.ok) throw new Error(body?.error || "invalid target summary response");
+    item.summaryPostedAt = new Date().toISOString();
+  } catch (error) {
+    item.summaryPostError = error.message;
+    console.error("Joybuy collector failed to report target summary", { payload, error });
+  }
+}
+
+async function markTargetDone(state, item, reason) {
   if (item.done) return;
   item.done = true;
   item.doneAt = new Date().toISOString();
   item.doneReason = reason;
   state.totals.targetsDone += 1;
+  await reportTargetSummary(state, item);
 }
 
 async function setIdleStatus(reason) {
@@ -785,13 +836,15 @@ function normalizeState(state) {
   state.queue = state.queue.map((item) => ({
     ...item,
     startPage: item.startPage ?? pageNumberFromSeed(item.targetUrl),
+    originalTargetIndex: item.originalTargetIndex ?? item.targetIndex,
     configuredMaxPage: item.configuredMaxPage ?? null,
     emptyPages: item.emptyPages ?? item.emptyOrDuplicatePages ?? 0,
     pagesFetched: item.pagesFetched ?? 0,
     observationsFound: item.observationsFound ?? 0,
     observationsPosted: item.observationsPosted ?? 0,
     observationsSkipped: item.observationsSkipped ?? 0,
-    zeroProductPages: item.zeroProductPages ?? 0
+    zeroProductPages: item.zeroProductPages ?? 0,
+    forbiddenPages: item.forbiddenPages ?? 0
   }));
   return state;
 }
@@ -807,6 +860,24 @@ function normalizeTarget(target) {
     label: target.label || "",
     maxPage: Number.isInteger(maxPage) && maxPage > 0 ? maxPage : null
   };
+}
+
+function shuffleTargets(targets) {
+  const entries = targets.map((target, originalIndex) => ({ target, originalIndex }));
+  for (let index = entries.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomInt(index + 1);
+    [entries[index], entries[swapIndex]] = [entries[swapIndex], entries[index]];
+  }
+  return entries;
+}
+
+function randomInt(maxExclusive) {
+  if (globalThis.crypto?.getRandomValues) {
+    const value = new Uint32Array(1);
+    globalThis.crypto.getRandomValues(value);
+    return value[0] % maxExclusive;
+  }
+  return Math.floor(Math.random() * maxExclusive);
 }
 
 function sleep(ms) {
