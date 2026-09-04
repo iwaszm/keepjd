@@ -45,13 +45,11 @@ async function refreshState() {
   const activeTarget = queue.find((entry) => entry.targetIndex === state.activeTargetQueueIndex) || queue.find((entry) => !entry.done);
   statusNode.textContent = state.running
     ? "Running"
-    : state.paused && state.autoPauseReason === "forbidden"
-      ? "Cooling"
-      : state.paused
-        ? "Paused"
-        : state.finishedAt
-          ? "Finished"
-          : "Idle";
+    : state.paused
+      ? "Paused"
+      : state.finishedAt
+        ? "Finished"
+        : "Idle";
   elapsedNode.textContent = formatElapsed(state);
   pagesNode.textContent = totals.pagesFetched || 0;
   foundNode.textContent = totals.observationsFound || 0;
