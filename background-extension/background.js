@@ -3,13 +3,16 @@ import {
   BATCH_FLUSH_SIZE,
   FORBIDDEN_COOLDOWN_BASE_MINUTES,
   FORBIDDEN_COOLDOWN_MAX_AUTO_RESUMES,
+  FORBIDDEN_PROBE_TIMEOUT_MS,
+  FORBIDDEN_PROBE_URL,
   MAX_PAGES_PER_TARGET,
   MAX_PAGE_RETRIES,
   OBSERVATION_DELAY_MS,
   OBSERVE_BATCH_TIMEOUT_MS,
   PAGE_FETCH_CONCURRENCY,
   PAGE_FETCH_TIMEOUT_MS,
-  PAGE_DELAY_MS,
+  PAGE_DELAY_MAX_MS,
+  PAGE_DELAY_MIN_MS,
   PAGES_PER_ALARM_TICK,
   RETRY_DELAY_MS,
   SNAPSHOT_SAVE_INTERVAL_PAGES,
@@ -173,6 +176,14 @@ async function processQueue() {
       scheduleForbiddenResume(state);
       return;
     }
+    const probe = await probeForbiddenRecovery();
+    if (!probe.ok) {
+      deferForbiddenCooldown(state, probe.error);
+      await saveState(state);
+      scheduleForbiddenResume(state);
+      await setBadge("403", "#b91c1c");
+      return;
+    }
     resumeForbiddenCooldown(state);
     await saveState(state);
   }
@@ -224,7 +235,7 @@ async function processQueue() {
       await saveSnapshotCache(snapshotCache);
       snapshotDirty = false;
     }
-    if (pagesLeft > 0) await sleep(PAGE_DELAY_MS);
+    if (pagesLeft > 0) await sleep(randomPageDelayMs());
   }
 
   if (snapshotDirty) await saveSnapshotCache(snapshotCache);
@@ -579,6 +590,59 @@ function autoPauseCollection(state, item, message) {
     console.error("Joybuy collector badge update failed", badgeError);
   });
   scheduleForbiddenResume(state);
+}
+
+async function probeForbiddenRecovery() {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort(new Error(`forbidden probe timeout after ${FORBIDDEN_PROBE_TIMEOUT_MS}ms`));
+  }, FORBIDDEN_PROBE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(FORBIDDEN_PROBE_URL, {
+      credentials: "include",
+      cache: "no-store",
+      signal: controller.signal
+    });
+    if (!response.ok) return { ok: false, error: `probe HTTP ${response.status}` };
+
+    const html = await response.text();
+    const diagnostics = describeSearchPageHtml(html);
+    if (diagnostics.hasForbiddenText) return { ok: false, error: "probe returned forbidden page" };
+
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function deferForbiddenCooldown(state, error) {
+  const now = new Date().toISOString();
+  const cooldownCount = (state.forbiddenCooldownCount || 0) + 1;
+  const shouldAutoResume = cooldownCount <= FORBIDDEN_COOLDOWN_MAX_AUTO_RESUMES;
+  const autoResumeAt = shouldAutoResume
+    ? new Date(Date.now() + FORBIDDEN_COOLDOWN_BASE_MINUTES * 60 * 1000).toISOString()
+    : null;
+  const item = state.queue?.find((entry) => !entry.done);
+
+  state.running = false;
+  state.paused = true;
+  state.pausedAt = now;
+  state.updatedAt = now;
+  state.autoPausedAt = now;
+  state.autoPauseReason = "forbidden";
+  state.autoResumeAt = autoResumeAt;
+  state.forbiddenCooldownCount = cooldownCount;
+  state.lastError = autoResumeAt
+    ? `forbidden recovery probe failed: ${error}; cooling down ${FORBIDDEN_COOLDOWN_BASE_MINUTES}m until ${autoResumeAt}`
+    : `forbidden recovery probe failed: ${error}; max 403 cooldown attempts reached, manual restart required`;
+
+  if (item) {
+    item.lastError = state.lastError;
+    item.forbiddenCooldownCount = cooldownCount;
+  }
 }
 
 function isAutoResumeReady(state) {
@@ -991,6 +1055,12 @@ function randomInt(maxExclusive) {
     return value[0] % maxExclusive;
   }
   return Math.floor(Math.random() * maxExclusive);
+}
+
+function randomPageDelayMs() {
+  const min = Math.max(0, PAGE_DELAY_MIN_MS);
+  const max = Math.max(min, PAGE_DELAY_MAX_MS);
+  return min + randomInt(max - min + 1);
 }
 
 function sleep(ms) {
