@@ -1,6 +1,9 @@
 import {
   API_BASE_URL,
   BATCH_FLUSH_SIZE,
+  FORBIDDEN_COOLDOWN_BASE_MINUTES,
+  FORBIDDEN_COOLDOWN_MAX_AUTO_RESUMES,
+  FORBIDDEN_COOLDOWN_MAX_MINUTES,
   MAX_PAGES_PER_TARGET,
   MAX_PAGE_RETRIES,
   OBSERVATION_DELAY_MS,
@@ -155,6 +158,9 @@ async function startCollection(reason) {
       targetsDone: 0
     },
     missingPricePointProductIds,
+    forbiddenCooldownCount: 0,
+    autoPauseReason: null,
+    autoResumeAt: null,
     lastError: null
   });
 
@@ -163,6 +169,15 @@ async function startCollection(reason) {
 
 async function processQueue() {
   const state = await loadState();
+  if (state.paused && state.autoPauseReason === "forbidden") {
+    if (!isAutoResumeReady(state)) {
+      scheduleForbiddenResume(state);
+      return;
+    }
+    resumeForbiddenCooldown(state);
+    await saveState(state);
+  }
+
   if (!state.running || state.paused) return;
   await setBadge("RUN", "#2563eb");
 
@@ -193,8 +208,13 @@ async function processQueue() {
     const latestState = await loadState();
     if (!latestState.running || latestState.paused) {
       if (snapshotDirty) await saveSnapshotCache(snapshotCache);
-      chrome.alarms.clear(ALARM_NAME);
-      await setBadge(latestState.paused ? "PAUSE" : "", latestState.paused ? "#a16207" : "#6b7280");
+      if (latestState.paused && latestState.autoPauseReason === "forbidden") {
+        scheduleForbiddenResume(latestState);
+        await setBadge("403", "#b91c1c");
+      } else {
+        chrome.alarms.clear(ALARM_NAME);
+        await setBadge(latestState.paused ? "PAUSE" : "", latestState.paused ? "#a16207" : "#6b7280");
+      }
       return;
     }
 
@@ -224,6 +244,8 @@ async function pauseCollection() {
   state.paused = true;
   state.pausedAt = new Date().toISOString();
   state.updatedAt = state.pausedAt;
+  state.autoPauseReason = null;
+  state.autoResumeAt = null;
   await saveState(state);
   chrome.alarms.clear(ALARM_NAME);
   await setBadge("PAUSE", "#a16207");
@@ -244,6 +266,8 @@ async function resumeCollection() {
   state.running = true;
   state.paused = false;
   state.pausedAt = null;
+  state.autoPauseReason = null;
+  state.autoResumeAt = null;
   state.resumedAt = new Date().toISOString();
   state.updatedAt = state.resumedAt;
   state.finishedAt = null;
@@ -529,6 +553,16 @@ function handlePageError(state, item, pageUrl, pageNumber, error) {
 
 function autoPauseCollection(state, item, message) {
   const now = new Date().toISOString();
+  const cooldownCount = (state.forbiddenCooldownCount || 0) + 1;
+  const cooldownMinutes = Math.min(
+    FORBIDDEN_COOLDOWN_BASE_MINUTES * (2 ** (cooldownCount - 1)),
+    FORBIDDEN_COOLDOWN_MAX_MINUTES
+  );
+  const shouldAutoResume = cooldownCount <= FORBIDDEN_COOLDOWN_MAX_AUTO_RESUMES;
+  const autoResumeAt = shouldAutoResume
+    ? new Date(Date.now() + cooldownMinutes * 60 * 1000).toISOString()
+    : null;
+
   pauseAbortRequested = true;
   abortActiveFetches();
   state.running = false;
@@ -537,12 +571,44 @@ function autoPauseCollection(state, item, message) {
   state.updatedAt = now;
   state.autoPausedAt = now;
   state.autoPauseReason = "forbidden";
-  state.lastError = message;
+  state.autoResumeAt = autoResumeAt;
+  state.forbiddenCooldownCount = cooldownCount;
+  state.lastError = autoResumeAt
+    ? `${message}; cooling down ${cooldownMinutes}m until ${autoResumeAt}`
+    : `${message}; max 403 cooldown attempts reached, manual restart required`;
   item.retryAfter = null;
-  item.lastError = message;
+  item.lastError = state.lastError;
+  item.forbiddenCooldownCount = cooldownCount;
   setBadge("403", "#b91c1c").catch((badgeError) => {
     console.error("Joybuy collector badge update failed", badgeError);
   });
+  scheduleForbiddenResume(state);
+}
+
+function isAutoResumeReady(state) {
+  if (!state.autoResumeAt) return false;
+  const autoResumeAt = Date.parse(state.autoResumeAt);
+  return Number.isFinite(autoResumeAt) && autoResumeAt <= Date.now();
+}
+
+function resumeForbiddenCooldown(state) {
+  const now = new Date().toISOString();
+  pauseAbortRequested = false;
+  state.running = true;
+  state.paused = false;
+  state.pausedAt = null;
+  state.autoPauseReason = null;
+  state.autoResumeAt = null;
+  state.resumedAt = now;
+  state.updatedAt = now;
+  state.lastError = null;
+}
+
+function scheduleForbiddenResume(state) {
+  if (!state.autoResumeAt) return;
+  const when = Date.parse(state.autoResumeAt);
+  if (!Number.isFinite(when)) return;
+  chrome.alarms.create(ALARM_NAME, { when });
 }
 
 async function postObservations(observations) {
@@ -801,7 +867,12 @@ async function restoreCollectionState(reason) {
   }
 
   if (state.paused) {
-    await setBadge("PAUSE", "#a16207");
+    if (state.autoPauseReason === "forbidden") {
+      scheduleForbiddenResume(state);
+      await setBadge("403", "#b91c1c");
+    } else {
+      await setBadge("PAUSE", "#a16207");
+    }
     return;
   }
 
@@ -875,6 +946,9 @@ function normalizeState(state) {
     observationsBuffered: state.totals?.observationsBuffered ?? 0,
     observationsFailed: state.totals?.observationsFailed ?? 0
   };
+  state.forbiddenCooldownCount = state.forbiddenCooldownCount ?? 0;
+  state.autoPauseReason = state.autoPauseReason ?? null;
+  state.autoResumeAt = state.autoResumeAt ?? null;
 
   state.queue = state.queue.map((item) => ({
     ...item,

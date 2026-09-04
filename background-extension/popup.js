@@ -43,7 +43,15 @@ async function refreshState() {
   const totals = state.totals || {};
   const queue = state.queue || [];
   const activeTarget = queue.find((entry) => !entry.done);
-  statusNode.textContent = state.running ? "Running" : state.paused ? "Paused" : state.finishedAt ? "Finished" : "Idle";
+  statusNode.textContent = state.running
+    ? "Running"
+    : state.paused && state.autoPauseReason === "forbidden"
+      ? "Cooling"
+      : state.paused
+        ? "Paused"
+        : state.finishedAt
+          ? "Finished"
+          : "Idle";
   elapsedNode.textContent = formatElapsed(state);
   pagesNode.textContent = totals.pagesFetched || 0;
   foundNode.textContent = totals.observationsFound || 0;
