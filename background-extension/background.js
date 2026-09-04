@@ -176,7 +176,7 @@ async function processQueue() {
       scheduleForbiddenResume(state);
       return;
     }
-    const probe = await probeForbiddenRecovery();
+    const probe = await probeForbiddenRecovery(currentQueuePageUrl(state));
     if (!probe.ok) {
       deferForbiddenCooldown(state, probe.error);
       await saveState(state);
@@ -271,6 +271,17 @@ async function resumeCollection() {
   const state = await loadState();
   const hasPendingQueue = (state.queue || []).some((entry) => !entry.done);
   if (!state.paused || !hasPendingQueue) return;
+
+  if (state.autoPauseReason === "forbidden") {
+    const probe = await probeForbiddenRecovery(currentQueuePageUrl(state));
+    if (!probe.ok) {
+      deferForbiddenCooldown(state, probe.error, { incrementCount: false });
+      await saveState(state);
+      scheduleForbiddenResume(state);
+      await setBadge("403", "#b91c1c");
+      return;
+    }
+  }
 
   pauseAbortRequested = false;
   state.running = true;
@@ -592,35 +603,36 @@ function autoPauseCollection(state, item, message) {
   scheduleForbiddenResume(state);
 }
 
-async function probeForbiddenRecovery() {
+async function probeForbiddenRecovery(probeUrl = FORBIDDEN_PROBE_URL) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     controller.abort(new Error(`forbidden probe timeout after ${FORBIDDEN_PROBE_TIMEOUT_MS}ms`));
   }, FORBIDDEN_PROBE_TIMEOUT_MS);
 
   try {
-    const response = await fetch(FORBIDDEN_PROBE_URL, {
+    const response = await fetch(probeUrl, {
       credentials: "include",
       cache: "no-store",
       signal: controller.signal
     });
-    if (!response.ok) return { ok: false, error: `probe HTTP ${response.status}` };
+    if (!response.ok) return { ok: false, error: `probe HTTP ${response.status}: ${probeUrl}` };
 
     const html = await response.text();
     const diagnostics = describeSearchPageHtml(html);
-    if (diagnostics.hasForbiddenText) return { ok: false, error: "probe returned forbidden page" };
+    if (diagnostics.hasForbiddenText) return { ok: false, error: `probe returned forbidden page: ${probeUrl}` };
 
     return { ok: true };
   } catch (error) {
-    return { ok: false, error: error.message };
+    return { ok: false, error: `${error.message}: ${probeUrl}` };
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
-function deferForbiddenCooldown(state, error) {
+function deferForbiddenCooldown(state, error, options = {}) {
   const now = new Date().toISOString();
-  const cooldownCount = (state.forbiddenCooldownCount || 0) + 1;
+  const incrementCount = options.incrementCount !== false;
+  const cooldownCount = (state.forbiddenCooldownCount || 0) + (incrementCount ? 1 : 0);
   const shouldAutoResume = cooldownCount <= FORBIDDEN_COOLDOWN_MAX_AUTO_RESUMES;
   const autoResumeAt = shouldAutoResume
     ? new Date(Date.now() + FORBIDDEN_COOLDOWN_BASE_MINUTES * 60 * 1000).toISOString()
@@ -643,6 +655,12 @@ function deferForbiddenCooldown(state, error) {
     item.lastError = state.lastError;
     item.forbiddenCooldownCount = cooldownCount;
   }
+}
+
+function currentQueuePageUrl(state) {
+  const item = state.queue?.find((entry) => !entry.done);
+  if (!item) return FORBIDDEN_PROBE_URL;
+  return buildPageUrl(item.targetUrl, item.nextPage || item.startPage || 1);
 }
 
 function isAutoResumeReady(state) {
