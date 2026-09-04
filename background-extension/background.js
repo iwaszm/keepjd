@@ -3,7 +3,6 @@ import {
   BATCH_FLUSH_SIZE,
   FORBIDDEN_COOLDOWN_BASE_MINUTES,
   FORBIDDEN_COOLDOWN_MAX_AUTO_RESUMES,
-  FORBIDDEN_COOLDOWN_MAX_MINUTES,
   MAX_PAGES_PER_TARGET,
   MAX_PAGE_RETRIES,
   OBSERVATION_DELAY_MS,
@@ -554,10 +553,7 @@ function handlePageError(state, item, pageUrl, pageNumber, error) {
 function autoPauseCollection(state, item, message) {
   const now = new Date().toISOString();
   const cooldownCount = (state.forbiddenCooldownCount || 0) + 1;
-  const cooldownMinutes = Math.min(
-    FORBIDDEN_COOLDOWN_BASE_MINUTES * (2 ** (cooldownCount - 1)),
-    FORBIDDEN_COOLDOWN_MAX_MINUTES
-  );
+  const cooldownMinutes = FORBIDDEN_COOLDOWN_BASE_MINUTES;
   const shouldAutoResume = cooldownCount <= FORBIDDEN_COOLDOWN_MAX_AUTO_RESUMES;
   const autoResumeAt = shouldAutoResume
     ? new Date(Date.now() + cooldownMinutes * 60 * 1000).toISOString()
