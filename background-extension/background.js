@@ -606,13 +606,17 @@ function autoPauseCollection(state, item, message) {
 async function probeForbiddenRecovery(probeUrl = FORBIDDEN_PROBE_URL) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
-    controller.abort(new Error(`forbidden probe timeout after ${FORBIDDEN_PROBE_TIMEOUT_MS}ms`));
+    controller.abort();
   }, FORBIDDEN_PROBE_TIMEOUT_MS);
 
   try {
     const response = await fetch(probeUrl, {
       credentials: "include",
       cache: "no-store",
+      redirect: "follow",
+      headers: {
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+      },
       signal: controller.signal
     });
     if (!response.ok) return { ok: false, error: `probe HTTP ${response.status}: ${probeUrl}` };
