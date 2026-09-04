@@ -18,6 +18,7 @@
         "https://*.joybuy.de/*"
       ],
       "js": [
+        "listing-parser.js",
         "content.js"
       ],
       "css": [

@@ -6,11 +6,17 @@ const RANGE_DAYS = {
   "90d": 90
 };
 const MAX_BOOT_ATTEMPTS = 20;
+const MANUAL_CAPTURE_DELAY_MS = 1000;
+const MANUAL_CAPTURE_LIMIT = 20;
+const OBSERVE_BATCH_URL = `${API_BASE_URL}/products/observe-batch`;
+const observedListingKeys = new Set();
 const state = {
   activeRange: "30d",
   href: "",
   lastProductId: "",
   syncTimer: 0,
+  captureTimer: 0,
+  captureInFlight: false,
   rangeMins: Object.fromEntries(RANGES.map((range) => [range, null]))
 };
 
@@ -18,6 +24,7 @@ boot();
 installUrlChangeHooks();
 observePageChanges();
 window.setInterval(() => scheduleSync("interval"), 1500);
+window.setTimeout(() => scheduleManualListingCapture("boot"), MANUAL_CAPTURE_DELAY_MS);
 
 function boot(attempt = 0) {
   if (!isProductPageCandidate()) {
@@ -151,17 +158,22 @@ function updatePanelMeta(root, snapshot) {
 function observePageChanges() {
   const observer = new MutationObserver(() => {
     scheduleSync("mutation");
+    scheduleManualListingCapture("mutation");
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 }
 
 function installUrlChangeHooks() {
-  window.addEventListener("popstate", () => scheduleSync("popstate"));
+  window.addEventListener("popstate", () => {
+    scheduleSync("popstate");
+    scheduleManualListingCapture("popstate");
+  });
   for (const method of ["pushState", "replaceState"]) {
     const original = history[method];
     history[method] = function patchedHistoryMethod(...args) {
       const result = original.apply(this, args);
       scheduleSync(method);
+      scheduleManualListingCapture(method);
       return result;
     };
   }
@@ -177,6 +189,42 @@ function scheduleSync(_reason) {
 
 function stopPageEvent(event) {
   event.stopPropagation();
+}
+
+function scheduleManualListingCapture(_reason) {
+  window.clearTimeout(state.captureTimer);
+  state.captureTimer = window.setTimeout(() => {
+    captureManualListingObservations();
+  }, MANUAL_CAPTURE_DELAY_MS);
+}
+
+async function captureManualListingObservations() {
+  if (state.captureInFlight || !window.JoybuyListingParser) return;
+  state.captureInFlight = true;
+
+  try {
+    const observations = window.JoybuyListingParser
+      .extractSearchPageObservations(document.documentElement.outerHTML, captureDate())
+      .slice(0, MANUAL_CAPTURE_LIMIT)
+      .filter((observation) => {
+        const key = `${observation.joybuy_product_id}:${observation.price}:${observation.availability}:${observation.captured_at}`;
+        if (observedListingKeys.has(key)) return false;
+        observedListingKeys.add(key);
+        return true;
+      });
+
+    if (!observations.length) return;
+    const response = await fetch(OBSERVE_BATCH_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ observations })
+    });
+    if (!response.ok) throw new Error(`observe batch failed: ${response.status}`);
+  } catch (error) {
+    console.warn("Joybuy manual listing capture failed", error);
+  } finally {
+    state.captureInFlight = false;
+  }
 }
 
 async function loadAndRender(root, joybuyProductId, range) {
@@ -367,4 +415,8 @@ function addDays(dateText, days) {
   if (!date) return "";
   date.setUTCDate(date.getUTCDate() + days);
   return dateOnly(date);
+}
+
+function captureDate() {
+  return new Date().toISOString().slice(0, 10);
 }
