@@ -42,7 +42,7 @@ async function refreshState() {
   const state = await readState();
   const totals = state.totals || {};
   const queue = state.queue || [];
-  const activeTarget = queue.find((entry) => !entry.done);
+  const activeTarget = queue.find((entry) => entry.targetIndex === state.activeTargetQueueIndex) || queue.find((entry) => !entry.done);
   statusNode.textContent = state.running
     ? "Running"
     : state.paused && state.autoPauseReason === "forbidden"

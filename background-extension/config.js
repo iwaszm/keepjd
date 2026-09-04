@@ -3,6 +3,7 @@ export const API_BASE_URL = "https://joybuy-price-history.zhangmeng43.workers.de
 export const MAX_PAGES_PER_TARGET = 500;
 export const STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES = 1;
 export const PAGES_PER_ALARM_TICK = 30;
+export const TARGET_PAGE_SLICE_SIZE = 5;
 export const PAGE_FETCH_CONCURRENCY = 1;
 export const PAGE_FETCH_TIMEOUT_MS = 20000;
 export const PAGE_DELAY_MIN_MS = 500;

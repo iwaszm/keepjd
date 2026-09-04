@@ -15,6 +15,7 @@ import {
   RETRY_DELAY_MS,
   SNAPSHOT_SAVE_INTERVAL_PAGES,
   STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES,
+  TARGET_PAGE_SLICE_SIZE,
   WRITE_UNCHANGED_OBSERVATIONS
 } from "./config.js";
 import { TARGET_PAGES } from "./target-pages.js";
@@ -134,6 +135,7 @@ async function startCollection(reason) {
       observationsSkipped: 0,
       forbiddenPages: 0,
       zeroProductPages: 0,
+      firstPageCollected: false,
       done: false
     };
   });
@@ -158,6 +160,10 @@ async function startCollection(reason) {
       targetsDone: 0
     },
     missingPricePointProductIds,
+    collectionPhase: "first_pages",
+    activeTargetCursor: null,
+    currentTargetPagesInSlice: 0,
+    activeTargetQueueIndex: null,
     forbiddenCooldownCount: 0,
     autoPauseReason: null,
     autoResumeAt: null,
@@ -185,8 +191,8 @@ async function processQueue() {
   let snapshotDirty = false;
   let pagesLeft = PAGES_PER_ALARM_TICK;
   while (pagesLeft > 0) {
-    const item = state.queue.find((entry) => !entry.done);
-    if (!item) {
+    const selection = selectNextCollectionItem(state);
+    if (selection.finished) {
       if (snapshotDirty) await saveSnapshotCache(snapshotCache);
       await flushPendingObservations(state);
       state.running = false;
@@ -198,11 +204,24 @@ async function processQueue() {
       console.info("Joybuy background collection finished", state.totals);
       return;
     }
+    if (!selection.item) break;
 
+    const item = selection.item;
     const needsFullFirstPageForPageCount = !item.maxPageDetected && (item.pagesFetched || 0) === 0;
-    const pageCount = needsFullFirstPageForPageCount ? 1 : Math.min(PAGE_FETCH_CONCURRENCY, pagesLeft);
+    const remainingSlicePages = selection.phase === "round_robin"
+      ? Math.max(1, TARGET_PAGE_SLICE_SIZE - (state.currentTargetPagesInSlice || 0))
+      : 1;
+    const pageCount = needsFullFirstPageForPageCount
+      ? 1
+      : Math.min(PAGE_FETCH_CONCURRENCY, pagesLeft, remainingSlicePages);
     const result = await collectPages(state, item, snapshotCache, pageCount);
     snapshotDirty = snapshotDirty || result.snapshotDirty;
+    if (selection.phase === "round_robin" && result.pagesProcessed > 0) {
+      state.currentTargetPagesInSlice = (state.currentTargetPagesInSlice || 0) + result.pagesProcessed;
+      if (item.done || state.currentTargetPagesInSlice >= TARGET_PAGE_SLICE_SIZE) {
+        advanceTargetCursor(state, item);
+      }
+    }
     state.updatedAt = new Date().toISOString();
     await saveProgressState(state);
     const latestState = await loadState();
@@ -232,6 +251,70 @@ async function processQueue() {
   state.updatedAt = new Date().toISOString();
   await saveState(state);
   chrome.alarms.create(ALARM_NAME, { delayInMinutes: 0.1 });
+}
+
+function selectNextCollectionItem(state) {
+  const queue = state.queue || [];
+  if (!queue.some((entry) => !entry.done)) {
+    state.activeTargetQueueIndex = null;
+    return { finished: true, item: null, phase: state.collectionPhase || "round_robin" };
+  }
+
+  if (state.collectionPhase !== "round_robin") {
+    const firstPageItem = queue.find((entry) => {
+      if (entry.done || entry.firstPageCollected) return false;
+      return !entry.retryAfter || Date.parse(entry.retryAfter) <= Date.now();
+    });
+    if (firstPageItem) {
+      state.collectionPhase = "first_pages";
+      state.activeTargetQueueIndex = firstPageItem.targetIndex;
+      return { finished: false, item: firstPageItem, phase: "first_pages" };
+    }
+
+    if (queue.some((entry) => !entry.done && !entry.firstPageCollected)) {
+      state.collectionPhase = "first_pages";
+      state.activeTargetQueueIndex = null;
+      return { finished: false, item: null, phase: "first_pages" };
+    }
+
+    state.collectionPhase = "round_robin";
+    state.activeTargetCursor = randomInt(queue.length);
+    state.currentTargetPagesInSlice = 0;
+  }
+
+  const item = selectRoundRobinItem(state);
+  state.activeTargetQueueIndex = item?.targetIndex ?? null;
+  return { finished: false, item, phase: "round_robin" };
+}
+
+function selectRoundRobinItem(state) {
+  const queue = state.queue || [];
+  if (!queue.length) return null;
+
+  const startCursor = Number.isInteger(state.activeTargetCursor)
+    ? state.activeTargetCursor
+    : randomInt(queue.length);
+
+  for (let offset = 0; offset < queue.length; offset += 1) {
+    const cursor = (startCursor + offset) % queue.length;
+    const item = queue[cursor];
+    if (item.done) continue;
+    if (item.retryAfter && Date.parse(item.retryAfter) > Date.now()) continue;
+    state.activeTargetCursor = cursor;
+    return item;
+  }
+
+  return null;
+}
+
+function advanceTargetCursor(state, currentItem) {
+  const queue = state.queue || [];
+  if (!queue.length) return;
+
+  const currentIndex = queue.indexOf(currentItem);
+  const fallbackCursor = Number.isInteger(state.activeTargetCursor) ? state.activeTargetCursor : 0;
+  state.activeTargetCursor = ((currentIndex >= 0 ? currentIndex : fallbackCursor) + 1) % queue.length;
+  state.currentTargetPagesInSlice = 0;
 }
 
 async function pauseCollection() {
@@ -477,6 +560,9 @@ function processFetchedPage(state, item, fetched, snapshotCache, seen, missingPr
   item.retryCount = 0;
   item.retryAfter = null;
   item.nextPage = fetched.pageNumber + 1;
+  if (fetched.pageNumber === (item.startPage || 1)) {
+    item.firstPageCollected = true;
+  }
 
   item.pagesFetched = (item.pagesFetched || 0) + 1;
   item.observationsFound = (item.observationsFound || 0) + observations.length;
@@ -946,6 +1032,10 @@ function normalizeState(state) {
   state.forbiddenCooldownCount = state.forbiddenCooldownCount ?? 0;
   state.autoPauseReason = state.autoPauseReason ?? null;
   state.autoResumeAt = state.autoResumeAt ?? null;
+  state.collectionPhase = state.collectionPhase ?? "first_pages";
+  state.activeTargetCursor = Number.isInteger(state.activeTargetCursor) ? state.activeTargetCursor : null;
+  state.currentTargetPagesInSlice = state.currentTargetPagesInSlice ?? 0;
+  state.activeTargetQueueIndex = state.activeTargetQueueIndex ?? null;
 
   state.queue = state.queue.map((item) => ({
     ...item,
@@ -958,7 +1048,8 @@ function normalizeState(state) {
     observationsPosted: item.observationsPosted ?? 0,
     observationsSkipped: item.observationsSkipped ?? 0,
     zeroProductPages: item.zeroProductPages ?? 0,
-    forbiddenPages: item.forbiddenPages ?? 0
+    forbiddenPages: item.forbiddenPages ?? 0,
+    firstPageCollected: item.firstPageCollected ?? (item.pagesFetched || 0) > 0
   }));
   return state;
 }
