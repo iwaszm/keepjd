@@ -3,8 +3,6 @@ import {
   BATCH_FLUSH_SIZE,
   FORBIDDEN_COOLDOWN_BASE_MINUTES,
   FORBIDDEN_COOLDOWN_MAX_AUTO_RESUMES,
-  FORBIDDEN_PROBE_TIMEOUT_MS,
-  FORBIDDEN_PROBE_URL,
   MAX_PAGES_PER_TARGET,
   MAX_PAGE_RETRIES,
   OBSERVATION_DELAY_MS,
@@ -176,14 +174,6 @@ async function processQueue() {
       scheduleForbiddenResume(state);
       return;
     }
-    const probe = await probeForbiddenRecovery(currentQueuePageUrl(state));
-    if (!probe.ok) {
-      deferForbiddenCooldown(state, probe.error);
-      await saveState(state);
-      scheduleForbiddenResume(state);
-      await setBadge("403", "#b91c1c");
-      return;
-    }
     resumeForbiddenCooldown(state);
     await saveState(state);
   }
@@ -271,17 +261,6 @@ async function resumeCollection() {
   const state = await loadState();
   const hasPendingQueue = (state.queue || []).some((entry) => !entry.done);
   if (!state.paused || !hasPendingQueue) return;
-
-  if (state.autoPauseReason === "forbidden") {
-    const probe = await probeForbiddenRecovery(currentQueuePageUrl(state));
-    if (!probe.ok) {
-      deferForbiddenCooldown(state, probe.error, { incrementCount: false });
-      await saveState(state);
-      scheduleForbiddenResume(state);
-      await setBadge("403", "#b91c1c");
-      return;
-    }
-  }
 
   pauseAbortRequested = false;
   state.running = true;
@@ -601,70 +580,6 @@ function autoPauseCollection(state, item, message) {
     console.error("Joybuy collector badge update failed", badgeError);
   });
   scheduleForbiddenResume(state);
-}
-
-async function probeForbiddenRecovery(probeUrl = FORBIDDEN_PROBE_URL) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    controller.abort();
-  }, FORBIDDEN_PROBE_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(probeUrl, {
-      credentials: "include",
-      cache: "no-store",
-      redirect: "follow",
-      headers: {
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-      },
-      signal: controller.signal
-    });
-    if (!response.ok) return { ok: false, error: `probe HTTP ${response.status}: ${probeUrl}` };
-
-    const html = await response.text();
-    const diagnostics = describeSearchPageHtml(html);
-    if (diagnostics.hasForbiddenText) return { ok: false, error: `probe returned forbidden page: ${probeUrl}` };
-
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error: `${error.message}: ${probeUrl}` };
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
-function deferForbiddenCooldown(state, error, options = {}) {
-  const now = new Date().toISOString();
-  const incrementCount = options.incrementCount !== false;
-  const cooldownCount = (state.forbiddenCooldownCount || 0) + (incrementCount ? 1 : 0);
-  const shouldAutoResume = cooldownCount <= FORBIDDEN_COOLDOWN_MAX_AUTO_RESUMES;
-  const autoResumeAt = shouldAutoResume
-    ? new Date(Date.now() + FORBIDDEN_COOLDOWN_BASE_MINUTES * 60 * 1000).toISOString()
-    : null;
-  const item = state.queue?.find((entry) => !entry.done);
-
-  state.running = false;
-  state.paused = true;
-  state.pausedAt = now;
-  state.updatedAt = now;
-  state.autoPausedAt = now;
-  state.autoPauseReason = "forbidden";
-  state.autoResumeAt = autoResumeAt;
-  state.forbiddenCooldownCount = cooldownCount;
-  state.lastError = autoResumeAt
-    ? `forbidden recovery probe failed: ${error}; cooling down ${FORBIDDEN_COOLDOWN_BASE_MINUTES}m until ${autoResumeAt}`
-    : `forbidden recovery probe failed: ${error}; max 403 cooldown attempts reached, manual restart required`;
-
-  if (item) {
-    item.lastError = state.lastError;
-    item.forbiddenCooldownCount = cooldownCount;
-  }
-}
-
-function currentQueuePageUrl(state) {
-  const item = state.queue?.find((entry) => !entry.done);
-  if (!item) return FORBIDDEN_PROBE_URL;
-  return buildPageUrl(item.targetUrl, item.nextPage || item.startPage || 1);
 }
 
 function isAutoResumeReady(state) {
