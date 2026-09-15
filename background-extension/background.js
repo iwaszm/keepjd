@@ -14,6 +14,8 @@ import {
   SNAPSHOT_SAVE_INTERVAL_PAGES,
   STOP_AFTER_DUPLICATE_OR_EMPTY_PAGES,
   TARGET_PAGE_SLICE_SIZE,
+  UPLOAD_RETRY_DELAY_MAX_MS,
+  UPLOAD_RETRY_DELAY_MIN_MS,
   WRITE_UNCHANGED_OBSERVATIONS
 } from "./config.js";
 import { TARGET_PAGES } from "./target-pages.js";
@@ -181,6 +183,16 @@ async function processQueue() {
     if (selection.finished) {
       if (snapshotDirty) await saveSnapshotCache(snapshotCache);
       await flushPendingObservations(state);
+      const pending = await loadPendingObservations();
+      if (pending.length) {
+        state.totals.observationsBuffered = pending.length;
+        state.totals.uploadingObservations = 0;
+        state.updatedAt = new Date().toISOString();
+        await saveState(state);
+        scheduleUploadRetryAlarm(state);
+        await setBadge("UP", "#a16207");
+        return;
+      }
       state.running = false;
       state.finishedAt = new Date().toISOString();
       state.updatedAt = state.finishedAt;
@@ -754,6 +766,16 @@ async function flushPendingObservations(state = null) {
     return 0;
   }
 
+  const retryAfter = state?.lastUploadRetryAfter ? Date.parse(state.lastUploadRetryAfter) : null;
+  if (Number.isFinite(retryAfter) && retryAfter > Date.now()) {
+    if (state) {
+      state.totals.observationsBuffered = pending.length;
+      state.totals.uploadingObservations = 0;
+      await saveState(state);
+    }
+    return 0;
+  }
+
   if (state) {
     state.totals.uploadingObservations = Math.min(BATCH_FLUSH_SIZE, pending.length);
     state.totals.observationsBuffered = pending.length;
@@ -782,6 +804,8 @@ async function flushPendingObservations(state = null) {
         state.totals.observationsBuffered = remaining.length;
         state.totals.uploadingObservations = 0;
         state.lastUploadFinishedAt = new Date().toISOString();
+        state.lastUploadRetryAfter = null;
+        if (/^upload failed:/i.test(state.lastError || "")) state.lastError = null;
         await saveState(state);
       }
     }
@@ -789,13 +813,15 @@ async function flushPendingObservations(state = null) {
     return totalPosted;
   } catch (error) {
     if (state) {
+      const retryAt = new Date(Date.now() + randomUploadRetryDelayMs()).toISOString();
       state.totals.uploadingObservations = 0;
       state.totals.observationsBuffered = remaining.length;
       state.lastUploadFailedAt = new Date().toISOString();
+      state.lastUploadRetryAfter = retryAt;
       state.lastError = `upload failed: ${error.message}`;
       await saveState(state);
     }
-    throw error;
+    return totalPosted;
   }
 }
 
@@ -995,6 +1021,21 @@ function randomPageDelayMs() {
   const min = Math.max(0, PAGE_DELAY_MIN_MS);
   const max = Math.max(min, PAGE_DELAY_MAX_MS);
   return min + randomInt(max - min + 1);
+}
+
+function randomUploadRetryDelayMs() {
+  const min = Math.max(0, UPLOAD_RETRY_DELAY_MIN_MS);
+  const max = Math.max(min, UPLOAD_RETRY_DELAY_MAX_MS);
+  return min + randomInt(max - min + 1);
+}
+
+function scheduleUploadRetryAlarm(state = null) {
+  const retryAt = state?.lastUploadRetryAfter ? Date.parse(state.lastUploadRetryAfter) : null;
+  if (Number.isFinite(retryAt) && retryAt > Date.now()) {
+    chrome.alarms.create(ALARM_NAME, { when: retryAt });
+    return;
+  }
+  chrome.alarms.create(ALARM_NAME, { delayInMinutes: 0.1 });
 }
 
 function sleep(ms) {
