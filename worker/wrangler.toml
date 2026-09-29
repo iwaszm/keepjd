@@ -7,9 +7,6 @@ binding = "DB"
 database_name = "joybuy_price_history"
 database_id = "24718ee9-f606-47cd-a4d8-4c2899c684ad"
 
-[triggers]
-crons = ["0 3 * * *"]
-
 [vars]
 TRACKED_PRODUCTS_JSON = """
 [
